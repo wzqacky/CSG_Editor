@@ -67,6 +67,74 @@ public class CsgEditorWindow : EditorWindow
         Selection.activeGameObject = m_preview;
     }
 
+    private VisualElement CreatePrimitiveCard()
+    {
+        var card = new VisualElement();
+        card.style.flexGrow = 1;
+        card.style.marginTop = 4;
+        card.style.marginBottom = 4;
+        card.style.marginLeft = 4;
+        card.style.marginRight = 6;
+        card.style.paddingLeft = 10;
+        card.style.justifyContent = Justify.Center;
+
+        // Can think of using different color for primitives v.s. operators
+        card.style.backgroundColor = new Color(0.17f, 0.20f, 0.26f);
+        card.style.borderLeftWidth = 4;
+        card.style.borderLeftColor = new Color(0.35f, 0.70f, 0.95f);
+
+        var title = new Label { name = "node-title" };
+        title.style.color = Color.white;
+        title.style.unityFontStyleAndWeight = FontStyle.Bold;
+        card.Add(title);
+
+        var type = new Label("Primitive");
+        type.style.color = new Color(0.7f, 0.75f, 0.8f);
+        type.style.fontSize = 10;
+        card.Add(type);
+
+        var position = new Vector3Field("Position") { name = "node-position" };
+        position.RegisterValueChangedCallback(evt =>
+        {
+            var sphere = card.userData as SphereNode;
+            if (sphere == null) return;
+
+            sphere.center = evt.newValue;
+            m_sphere = sphere;
+            UpdatePreview();
+        });
+        card.Add(position);
+
+        var radius = new FloatField("Radius") { name = "node-radius" };
+        radius.RegisterValueChangedCallback(evt =>
+        {
+            var sphere = card.userData as SphereNode;
+            if (sphere == null) return;
+
+            sphere.radius = Mathf.Max(0.01f, evt.newValue);
+            radius.SetValueWithoutNotify(sphere.radius);
+            m_sphere = sphere;
+            UpdatePreview();
+        });
+        card.Add(radius);
+
+        return card;
+    }
+
+    private void BindPrimitiveCard(VisualElement card, int index)
+    {
+        var sphere = m_tree.GetItemDataForIndex<SphereNode>(index);
+        card.userData = sphere;
+
+        // Properties shown here
+        card.Q<Label>("node-title").text =
+            $"Sphere {m_tree.GetIdForIndex(index)}";
+        card.Q<Vector3Field>("node-position")
+            .SetValueWithoutNotify(sphere.center);
+        card.Q<FloatField>("node-radius")
+            .SetValueWithoutNotify(sphere.radius);
+    }
+
     public void CreateGUI()
     {   
         // Each editor window contains a root VisualElement object
@@ -113,13 +181,12 @@ public class CsgEditorWindow : EditorWindow
         var dropZone = new Label("Drop here");
         m_rightPane.Add(dropZone);
 
-        m_tree = new TreeView { fixedItemHeight = 24 };
+        // fixedItemHeight adjust the primitive card's height
+        // Increase this when more space needed
+        m_tree = new TreeView { fixedItemHeight = 80 };
         m_tree.style.height = 240;
-        m_tree.makeItem = () => new Label();
-        m_tree.bindItem = (item, index) =>
-        {
-            ((Label)item).text = $"Sphere {m_tree.GetIdForIndex(index)}";
-        };
+        m_tree.makeItem = CreatePrimitiveCard;
+        m_tree.bindItem = BindPrimitiveCard;
         m_tree.SetRootItems(m_treeItems);
         m_rightPane.Add(m_tree);
 
@@ -152,43 +219,8 @@ public class CsgEditorWindow : EditorWindow
             m_tree.Rebuild();
 
             m_sphere = sphere;
-            ShowSphereProperties(sphere);
             UpdatePreview();
             evt.StopPropagation();
         }, TrickleDown.TrickleDown);
-
-        // Clicking an existing tree entry selects that sphere for editing and preview.
-        m_tree.selectedIndicesChanged += indices =>
-        {
-            foreach (int index in indices)
-            {
-                m_sphere = m_tree.GetItemDataForIndex<SphereNode>(index);
-                ShowSphereProperties(m_sphere);
-                UpdatePreview();
-                break;
-            }
-        };
-    }
-
-    private void ShowSphereProperties(SphereNode sphere)
-    {
-        m_propertiesPane.Clear();
-        m_propertiesPane.Add(new Label("Sphere properties"));
-
-        var position = new Vector3Field("Position") { value = sphere.center };
-        position.RegisterValueChangedCallback(evt =>
-        {
-            sphere.center = evt.newValue;
-            UpdatePreview();
-        });
-        m_propertiesPane.Add(position);
-
-        var radius = new FloatField("Radius") { value = sphere.radius };
-        radius.RegisterValueChangedCallback(evt =>
-        {
-            sphere.radius = Mathf.Max(0.01f, evt.newValue);
-            UpdatePreview();
-        });
-        m_propertiesPane.Add(radius);
     }
 }
