@@ -8,13 +8,14 @@ public class CsgEditorWindow : EditorWindow
     private VisualElement m_rightPane;
     private readonly List<string> m_nodes = new List<string> { "Sphere", "Box", "Union" };
 
+    // TODO: later on, maybe need a common base for all primitives
+    // plus, a List to hold all existing primitives?
     private SphereNode m_sphere = new SphereNode();
 
     [SerializeField] private GameObject m_preview;
     [SerializeField] private Mesh m_mesh;
 
     private TreeView m_tree;
-    private VisualElement m_propertiesPane;
     private readonly List<TreeViewItemData<SphereNode>> m_treeItems = 
         new List<TreeViewItemData<SphereNode>>();
     private int m_nextNodeId = 1;
@@ -118,6 +119,14 @@ public class CsgEditorWindow : EditorWindow
         });
         card.Add(radius);
 
+        var deleteButton = new Button(() =>
+        {
+            var sphere = card.userData as SphereNode;
+            if (sphere != null) DeleteSphere(sphere);
+        }) { text = "Delete" };
+        deleteButton.style.alignSelf = Align.FlexEnd;
+        card.Add(deleteButton);
+
         return card;
     }
 
@@ -128,11 +137,74 @@ public class CsgEditorWindow : EditorWindow
 
         // Properties shown here
         card.Q<Label>("node-title").text =
-            $"Sphere {m_tree.GetIdForIndex(index)}";
+            $"Sphere {index + 1}";
         card.Q<Vector3Field>("node-position")
             .SetValueWithoutNotify(sphere.center);
         card.Q<FloatField>("node-radius")
             .SetValueWithoutNotify(sphere.radius);
+    }
+
+    private void DeleteSphere(SphereNode sphere)
+    {
+        // TODO: Hard-coded delete function, need to change later on
+        int index = m_treeItems.FindIndex(item => item.data == sphere);
+        if (index < 0) return;
+
+        bool wasPreviewed = m_sphere == sphere;
+        m_tree.ClearSelection();
+        m_treeItems.RemoveAt(index);
+        m_tree.SetRootItems(m_treeItems);
+        m_tree.Rebuild();
+
+        if (!wasPreviewed) return;
+
+        if (m_treeItems.Count > 0)
+        {
+            m_sphere = m_treeItems[Mathf.Min(index, m_treeItems.Count - 1)].data;
+            UpdatePreview();
+            return;
+        }
+
+        m_sphere = null;
+        if (m_preview != null)
+        {
+            if (Selection.activeGameObject == m_preview)
+                Selection.activeGameObject = null;
+            DestroyImmediate(m_preview);
+            m_preview = null;
+        }
+        if (m_mesh != null)
+        {
+            DestroyImmediate(m_mesh);
+            m_mesh = null;
+        }
+    }
+
+    private void OnDragUpdate(DragUpdatedEvent evt)
+    {
+        var primitive = DragAndDrop.GetGenericData("CSGPrimitive") as string;
+        DragAndDrop.visualMode = primitive == "Sphere"
+            ? DragAndDropVisualMode.Copy
+            : DragAndDropVisualMode.Rejected;
+        evt.StopPropagation();
+    }
+
+    private void OnDragPerform(DragPerformEvent evt)
+    {
+        if (DragAndDrop.GetGenericData("CSGPrimitive") as string != "Sphere")
+            return;
+
+        DragAndDrop.AcceptDrag();
+
+        var sphere = new SphereNode();
+        int id = m_nextNodeId++;
+        m_treeItems.Add(new TreeViewItemData<SphereNode>(id, sphere));
+        m_tree.SetRootItems(m_treeItems);
+        m_tree.Rebuild();
+
+        m_sphere = sphere;
+        UpdatePreview();
+        evt.StopPropagation();
     }
 
     public void CreateGUI()
@@ -142,6 +214,7 @@ public class CsgEditorWindow : EditorWindow
 
         // Create split view
         var splitView = new TwoPaneSplitView(0, 250, TwoPaneSplitViewOrientation.Horizontal);
+        splitView.style.flexGrow = 1;
         rootVisualElement.Add(splitView);
 
         // Two panels as children
@@ -180,47 +253,21 @@ public class CsgEditorWindow : EditorWindow
         // A dedicated drop zone
         var dropZone = new Label("Drop here");
         m_rightPane.Add(dropZone);
+        dropZone.style.height = 40;
 
         // fixedItemHeight adjust the primitive card's height
         // Increase this when more space needed
-        m_tree = new TreeView { fixedItemHeight = 80 };
-        m_tree.style.height = 240;
+        m_tree = new TreeView { fixedItemHeight = 100 };
+        // Take up the remaining space in the right pane
+        m_tree.style.flexGrow = 1;
         m_tree.makeItem = CreatePrimitiveCard;
         m_tree.bindItem = BindPrimitiveCard;
+        m_tree.unbindItem = (item, index) => item.userData = null;
         m_tree.SetRootItems(m_treeItems);
         m_rightPane.Add(m_tree);
 
-        m_propertiesPane = new VisualElement();
-        m_rightPane.Add(m_propertiesPane);
+        m_rightPane.RegisterCallback<DragUpdatedEvent>(OnDragUpdate, TrickleDown.TrickleDown);
 
-        dropZone.style.height = 40;
-        m_tree.style.height = 40;
-
-        m_rightPane.RegisterCallback<DragUpdatedEvent>(evt =>
-        {
-            var primitive = DragAndDrop.GetGenericData("CSGPrimitive") as string;
-            DragAndDrop.visualMode = primitive == "Sphere"
-                ? DragAndDropVisualMode.Copy
-                : DragAndDropVisualMode.Rejected;
-            evt.StopPropagation();
-        }, TrickleDown.TrickleDown);
-
-        m_rightPane.RegisterCallback<DragPerformEvent>(evt =>
-        {
-            if (DragAndDrop.GetGenericData("CSGPrimitive") as string != "Sphere")
-                return;
-
-            DragAndDrop.AcceptDrag();
-
-            var sphere = new SphereNode();
-            int id = m_nextNodeId++;
-            m_treeItems.Add(new TreeViewItemData<SphereNode>(id, sphere));
-            m_tree.SetRootItems(m_treeItems);
-            m_tree.Rebuild();
-
-            m_sphere = sphere;
-            UpdatePreview();
-            evt.StopPropagation();
-        }, TrickleDown.TrickleDown);
+        m_rightPane.RegisterCallback<DragPerformEvent>(OnDragPerform, TrickleDown.TrickleDown);
     }
 }
