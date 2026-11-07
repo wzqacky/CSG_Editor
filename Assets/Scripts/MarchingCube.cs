@@ -328,28 +328,36 @@ public static class MarchingCube
     static void march_cube(int x, int y, int z, float[,,] vals, Bounds bounds, List<Vector3> vertices, List<int> triangles)
     {
         int[] tri = get_triangulation(x, y, z, vals);
+        Vector3 step = bounds.size / (vals.GetLength(0) - 1);
 
-        foreach (int edgeIndex in tri) // num of edge_index is multiple of 3
+        // Each group of three edges in the table describes one triangle.
+        for (int i = 0; i < tri.Length && tri[i] >= 0; i += 3)
         {
-            if (edgeIndex < 0) { break; }
+            int firstVertex = vertices.Count;
+            for (int corner = 0; corner < 3; corner++)
+            {
+                int edgeIndex = tri[i + corner];
 
-            var (pointIndex0, pointIndex1) = EDGES[edgeIndex];
-            Vector3Int pos_a = new Vector3Int(x, y, z) + POINTS[pointIndex0];
-            Vector3Int pos_b = new Vector3Int(x, y, z) + POINTS[pointIndex1];
+                var (pointIndex0, pointIndex1) = EDGES[edgeIndex];
+                Vector3Int pos_a = new Vector3Int(x, y, z) + POINTS[pointIndex0];
+                Vector3Int pos_b = new Vector3Int(x, y, z) + POINTS[pointIndex1];
 
-            float val_a = vals[pos_a.x, pos_a.y, pos_a.z];
-            float val_b = vals[pos_b.x, pos_b.y, pos_b.z];
-            float t = val_a / (val_a - val_b);
+                float val_a = vals[pos_a.x, pos_a.y, pos_a.z];
+                float val_b = vals[pos_b.x, pos_b.y, pos_b.z];
+                float t = val_a / (val_a - val_b);
 
-            Vector3 position = new Vector3(
-                pos_a.x + t * (pos_b.x - pos_a.x),
-                pos_a.y + t * (pos_b.y - pos_a.y),
-                pos_a.z + t * (pos_b.z - pos_a.z));
+                Vector3 position = new Vector3(
+                    pos_a.x + t * (pos_b.x - pos_a.x),
+                    pos_a.y + t * (pos_b.y - pos_a.y),
+                    pos_a.z + t * (pos_b.z - pos_a.z));
 
-            Vector3 step = bounds.size / (vals.GetLength(0) - 1);
-            position = bounds.min + Vector3.Scale(position, step);
-            vertices.Add(position);
-            triangles.Add(vertices.Count - 1);
+                vertices.Add(bounds.min + Vector3.Scale(position, step));
+            }
+
+            // The table winds faces inward; add indices in outward order.
+            triangles.Add(firstVertex);
+            triangles.Add(firstVertex + 2);
+            triangles.Add(firstVertex + 1);
         }
     }
 }
