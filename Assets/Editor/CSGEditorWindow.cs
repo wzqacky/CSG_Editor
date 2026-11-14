@@ -347,6 +347,18 @@ public class CsgEditorWindow : EditorWindow
         // Each editor window contains a root VisualElement object
         rootVisualElement.Add(new Label("CSG toolbox"));
 
+        // Toggle for pixel-art render
+        var pixelArtToggle = new Toggle("Pixel-art render")
+        {
+            value = PixelArtRenderController.Enabled
+        };
+        pixelArtToggle.RegisterValueChangedCallback(evt =>
+        {
+            if (!PixelArtRenderController.SetEnabled(evt.newValue))
+                pixelArtToggle.SetValueWithoutNotify(false);
+        });
+        rootVisualElement.Add(pixelArtToggle);
+
         // Create split view
         var splitView = new TwoPaneSplitView(0, 250, TwoPaneSplitViewOrientation.Horizontal);
         splitView.style.flexGrow = 1;
