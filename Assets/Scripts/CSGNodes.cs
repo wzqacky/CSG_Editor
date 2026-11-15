@@ -5,6 +5,8 @@ using UnityEngine;
 public abstract class CSGNode
 {
     public abstract float SignedDistance(Vector3 point);
+    // Returns an axis-aligned box containing the shape
+    // as Marching cube requries a finite region to compute
     public abstract Bounds GetBounds();
 }
 
@@ -12,6 +14,7 @@ public abstract class CSGNode
 public abstract class PrimitiveNode : CSGNode
 {
     public Vector3 center = Vector3.zero;
+    public Color color = Color.gray;
 }
 
 [Serializable]
@@ -25,8 +28,6 @@ public sealed class SphereNode : PrimitiveNode
     }
 
     public override Bounds GetBounds()
-    // Returns an axis-aligned box containing the shape
-    // as Marching cube requries a finite region to compute
     {
         return new Bounds(center, Vector3.one * (radius * 2f));
     }

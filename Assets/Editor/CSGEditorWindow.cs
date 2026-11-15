@@ -2,6 +2,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
 using System.Collections.Generic;
+using UnityEditor.UIElements;
 
 public class CsgEditorWindow : EditorWindow
 {
@@ -12,6 +13,7 @@ public class CsgEditorWindow : EditorWindow
         // Important two Unity objects used for display
         public GameObject gameObject;
         public Mesh mesh;
+        public Material material;
     }
     // Holds CSG node in the scene: params and relationships
     [SerializeField] private CSGStorage m_storage = new CSGStorage();
@@ -83,11 +85,26 @@ public class CsgEditorWindow : EditorWindow
 
         var mesh = new Mesh { name = $"CSG Mesh {id}", hideFlags = HideFlags.DontSave };
         gameObject.GetComponent<MeshFilter>().sharedMesh = mesh;
+        Material previewMaterial = null;
+
+        if (node is PrimitiveNode primitive)
+        {
+            // Copy from the existing material
+            var meshRenderer = gameObject.GetComponent<MeshRenderer>();
+            previewMaterial = new Material(meshRenderer.sharedMaterial)
+            {
+                name = $"CSG Preview Material {id}",
+                hideFlags = HideFlags.DontSave
+            };
+            previewMaterial.color = primitive.color;
+            meshRenderer.sharedMaterial = previewMaterial;
+        }
 
         m_previews.Add(node, new PreviewInstance
         {
             gameObject = gameObject,
-            mesh = mesh
+            mesh = mesh,
+            material = previewMaterial
         });
 
         UpdatePreview(node);
@@ -129,6 +146,8 @@ public class CsgEditorWindow : EditorWindow
             DestroyImmediate(preview.gameObject);
         if (preview.mesh != null)
             DestroyImmediate(preview.mesh);
+        if (preview.material != null)
+            DestroyImmediate(preview.material);
     }
 
     private void OnDisable()
@@ -150,6 +169,7 @@ public class CsgEditorWindow : EditorWindow
 
         card.Add(new Label { name = "node-title" });
 
+        // Primitve position
         var position = new Vector3Field("Position") { name = "node-position" };
         position.RegisterValueChangedCallback(evt =>
         {
@@ -161,6 +181,7 @@ public class CsgEditorWindow : EditorWindow
         });
         card.Add(position);
 
+        // Pritmive radius (for sphere only)
         var radius = new FloatField("Radius") { name = "node-radius" };
         radius.RegisterValueChangedCallback(evt =>
         {
@@ -173,6 +194,7 @@ public class CsgEditorWindow : EditorWindow
         });
         card.Add(radius);
 
+        // Primitve size (for box only)
         var size = new Vector3Field("Size") { name = "node-size" };
         size.RegisterValueChangedCallback(evt =>
         {
@@ -185,6 +207,41 @@ public class CsgEditorWindow : EditorWindow
         });
         card.Add(size);
 
+        // Primitive color attribute
+        var hex = new TextField("Hex")
+        {
+            name = "node-hex",
+            isReadOnly = true
+        };
+        // Color picker (from Unity Editor UI Control)
+        var color = new ColorField("Color")
+        {
+            name = "node-color",
+            showAlpha = false,
+            hdr = false
+        };
+
+        color.RegisterValueChangedCallback(evt =>
+        {
+            if (card.userData is PrimitiveNode primitive)
+            {
+                primitive.color = evt.newValue;
+                hex.SetValueWithoutNotify(
+                    "#" + ColorUtility.ToHtmlStringRGB(primitive.color));
+
+                if (m_previews.TryGetValue(primitive, out var preview) &&
+                    preview.material != null)
+                {
+                    preview.material.color = primitive.color;
+                }
+
+                SceneView.RepaintAll();
+            }
+        });
+        card.Add(color);
+        card.Add(hex);
+
+        // Children for CSG operation node
         card.Add(new Label { name = "node-left" });
         card.Add(new Label { name = "node-right" });
 
@@ -224,6 +281,20 @@ public class CsgEditorWindow : EditorWindow
             ? DisplayStyle.Flex : DisplayStyle.None;
         if (node is BoxNode box)
             size.SetValueWithoutNotify(box.size);
+
+        var color = card.Q<ColorField>("node-color");
+        var hex = card.Q<TextField>("node-hex");
+
+        bool isPrimitive = node is PrimitiveNode;
+        color.style.display = hex.style.display =
+            node is PrimitiveNode ? DisplayStyle.Flex : DisplayStyle.None;
+
+        if (node is PrimitiveNode colorPrimitive)
+        {
+            color.SetValueWithoutNotify(colorPrimitive.color);
+            hex.SetValueWithoutNotify(
+                "#" + ColorUtility.ToHtmlStringRGB(colorPrimitive.color));
+        }
 
         var left = card.Q<Label>("node-left");
         var right = card.Q<Label>("node-right");
