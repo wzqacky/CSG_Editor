@@ -2,7 +2,7 @@ Shader "Custom/PixelArt/LabColorQuantize"
 {
     Properties
     {   
-        [IntRange] _BitsPerChannel ("Bits Per Channel", Range(1, 4)) = 2
+        [IntRange] _BitsPerChannel ("Bits Per Channel", Range(1, 4)) = 4
     }
 
     SubShader
