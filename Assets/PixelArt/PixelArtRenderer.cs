@@ -8,16 +8,25 @@ using UnityEngine.Rendering.Universal;
 public sealed class PixelArtRenderer : ScriptableRendererFeature
 {
     [SerializeField, Range(2,16)]
+    // Downsampling ratio
     private int pixelSize = 6;
 
-    public static bool SceneViewEnabled { get; set; } = false;
-    public static Camera PreviewCamera { get; set; }
+    public int PixelSize => pixelSize;
+
+    // Shader/quantization material
+    private const string QuantizeShaderName = "Custom/PixelArt/LabColorQuantize";
+    private Material quantizeMaterial;
+
+    public static bool SceneViewEnabled = false;
 
     private PixelArtPass pass;
 
     public override void Create()
     // Construct the pass and select its place in the rendering sequence
     {
+        CoreUtils.Destroy(quantizeMaterial);
+        quantizeMaterial =
+            CoreUtils.CreateEngineMaterial(QuantizeShaderName);
         pass = new PixelArtPass
         {
             // Schedules the effect after URP's normal postprocessing
@@ -35,12 +44,14 @@ public sealed class PixelArtRenderer : ScriptableRendererFeature
         }
 
         pass.PixelSize = pixelSize;
+        pass.QuantizeMaterial = quantizeMaterial;
         renderer.EnqueuePass(pass);
     }
 
     private sealed class PixelArtPass : ScriptableRenderPass
     {
-        public int PixelSize { get; set; } = 6;
+        public int PixelSize = 6;
+        public Material QuantizeMaterial;
 
         public PixelArtPass()
         {
@@ -73,6 +84,37 @@ public sealed class PixelArtRenderer : ScriptableRendererFeature
             smallDesc.clearBuffer = false;
 
             TextureHandle smallImage = renderGraph.CreateTexture(smallDesc);
+            // Add stage: shrink the rendered scene
+            // NOTE: Using nearest-neighbor downsampling here to ensure crisper features
+            renderGraph.AddBlitPass(
+                source, smallImage, Vector2.one, Vector2.zero,
+                filterMode: RenderGraphUtils.BlitFilterMode.ClampNearest,
+                passName: "Pixel Art Downsample"
+            );
+
+            TextureHandle imageToUpsample = smallImage;
+            if (QuantizeMaterial != null)
+            {
+                var quantizedDesc = smallDesc;
+                quantizedDesc.name = "PixelArt_quantized";
+
+                TextureHandle quantizedImage = renderGraph.CreateTexture(quantizedDesc);
+
+                var parameters = new RenderGraphUtils.BlitMaterialParameters(
+                    smallImage,
+                    quantizedImage,
+                    QuantizeMaterial,
+                    0
+                );
+
+                // Add stage: Lab-space color quantization
+                renderGraph.AddBlitPass(
+                    parameters,
+                    passName: "Pixel Art Lab Color Quantization"
+                );
+
+                imageToUpsample = quantizedImage;
+            }
 
             // Make a full-size texture for the final image
             var outputDesc = sourceDesc;
@@ -82,18 +124,10 @@ public sealed class PixelArtRenderer : ScriptableRendererFeature
             outputDesc.clearBuffer = false;
 
             TextureHandle output = renderGraph.CreateTexture(outputDesc);
-
-            // Add stage: shrink the rendered scene
-            // NOTE: Using nearest-neighbor downsampling here to ensure crisper features
-            renderGraph.AddBlitPass(
-                source, smallImage, Vector2.one, Vector2.zero,
-                filterMode: RenderGraphUtils.BlitFilterMode.ClampNearest,
-                passName: "Pixel Art Downsample"
-            );
             
             // Add stage: enlarge without smoothing the small pixels
             renderGraph.AddBlitPass(
-                smallImage, output, Vector2.one, Vector2.zero,
+                imageToUpsample, output, Vector2.one, Vector2.zero,
                 filterMode: RenderGraphUtils.BlitFilterMode.ClampNearest,
                 passName: "Pixel Art Upsample"
             );
