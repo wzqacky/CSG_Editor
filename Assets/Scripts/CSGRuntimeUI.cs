@@ -425,11 +425,15 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
         if (entity.node is OperationNode operation)
         {
-            card.style.height = 145;
+            card.style.minHeight = 145;
             view.left = AddPort(card, null, true, 75);
             view.right = AddPort(card, null, true, 107);
             AddInputRow(view, operation, true, 70);
             AddInputRow(view, operation, false, 102);
+            var form = new VisualElement();
+            form.AddToClassList("operation-form");
+            card.Add(form);
+            AddOperationColorFields(form, operation);
         }
         else if (entity.node is PrimitiveNode primitive)
         {
@@ -673,12 +677,43 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         else if (primitive is BoxNode box)
             AddVectorFields(form, "Size", box.size, true, value => box.size = value);
         form.Add(StyledLabel("Color", "field-label"));
-        AddColorPicker(form, primitive);
+        AddColorPicker(form, primitive.color, color =>
+        {
+            primitive.color = color;
+            RefreshPreviewColors();
+        });
     }
 
-    private void AddColorPicker(VisualElement form, PrimitiveNode primitive)
+    private void AddOperationColorFields(VisualElement form, OperationNode operation)
     {
-        Color.RGBToHSV(primitive.color, out float hue, out float saturation, out float value);
+        form.Add(StyledLabel("Color source", "field-label"));
+        var choices = new List<string> { "Input A (Left)", "Input B (Right)", "Custom" };
+        var source = new DropdownField(choices, (int)operation.colorSource);
+        source.AddToClassList("form-field");
+        form.Add(source);
+
+        var custom = new VisualElement();
+        custom.style.display = operation.colorSource == OperationColorSource.Custom
+            ? DisplayStyle.Flex : DisplayStyle.None;
+        form.Add(custom);
+        AddColorPicker(custom, operation.customColor, color =>
+        {
+            operation.customColor = color;
+            RefreshPreviewColors();
+        });
+        source.RegisterValueChangedCallback(_ =>
+        {
+            operation.colorSource = (OperationColorSource)source.index;
+            custom.style.display = operation.colorSource == OperationColorSource.Custom
+                ? DisplayStyle.Flex : DisplayStyle.None;
+            RefreshPreviewColors();
+        });
+    }
+
+    private void AddColorPicker(VisualElement form, Color initialColor, Action<Color> apply)
+    {
+        Color.RGBToHSV(initialColor, out float hue, out float saturation, out float value);
+        Color currentColor = initialColor;
         var picker = new VisualElement { name = "color-picker" };
         picker.AddToClassList("color-picker");
         picker.style.display = DisplayStyle.None;
@@ -687,12 +722,17 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             bool opening = picker.style.display == DisplayStyle.None;
             picker.style.display = opening ? DisplayStyle.Flex : DisplayStyle.None;
             if (opening)
-                form.parent.BringToFront();
+            {
+                var card = form;
+                while (card.parent != m_canvas && card.parent != null)
+                    card = card.parent;
+                card.BringToFront();
+            }
         }) { text = "Choose color" };
         button.AddToClassList("color-picker-button");
         var swatch = new VisualElement { name = "color-swatch", pickingMode = PickingMode.Ignore };
         swatch.AddToClassList("color-swatch");
-        swatch.style.backgroundColor = primitive.color;
+        swatch.style.backgroundColor = initialColor;
         button.Add(swatch);
         form.Add(button);
 
@@ -729,19 +769,13 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         picker.Add(hueBar);
         form.Add(picker);
 
-        void UpdateColor()
+        void UpdateMarkers()
         {
-            Color next = Color.HSVToRGB(hue, saturation, value);
-            next.a = primitive.color.a;
-            primitive.color = next;
-            swatch.style.backgroundColor = next;
             colorMarker.style.left = Length.Percent(saturation * 100);
             colorMarker.style.top = Length.Percent((1 - value) * 100);
             hueMarker.style.left = Length.Percent(hue * 100);
             hueMarker.style.top = Length.Percent(50);
             saturationValue.MarkDirtyRepaint();
-            if (m_previews.TryGetValue(primitive, out var preview))
-                preview.material.color = next;
         }
 
         void SetFromPointer(VisualElement element, Vector2 position, bool isHue)
@@ -758,7 +792,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
                 saturation = x;
                 value = 1 - Mathf.Clamp01((point.y - rect.y) / rect.height);
             }
-            UpdateColor();
+            Color next = Color.HSVToRGB(hue, saturation, value);
+            next.a = currentColor.a;
+            currentColor = next;
+            swatch.style.backgroundColor = next;
+            UpdateMarkers();
+            apply(next);
         }
 
         void RegisterPickerInput(VisualElement element, bool isHue)
@@ -789,7 +828,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
         RegisterPickerInput(saturationValue, false);
         RegisterPickerInput(hueBar, true);
-        UpdateColor();
+        UpdateMarkers();
     }
 
     private static void DrawColorGradient(MeshGenerationContext context, Rect rect,
@@ -950,6 +989,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             m_status.text = "Preview updated.";
     }
 
+    private void RefreshPreviewColors()
+    {
+        foreach (var preview in m_previews)
+            preview.Value.material.color = preview.Key.GetColor();
+    }
+
     private void CreatePreview(CSGNode node, int id)
     {
         var gameObject = GameObject.CreatePrimitive(PrimitiveType.Sphere);
@@ -991,8 +1036,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         preview.mesh.SetTriangles(triangles, 0);
         preview.mesh.RecalculateNormals();
         preview.mesh.RecalculateBounds();
-        if (node is PrimitiveNode primitive)
-            preview.material.color = primitive.color;
+        preview.material.color = node.GetColor();
     }
 
     private void RemovePreview(CSGNode node)

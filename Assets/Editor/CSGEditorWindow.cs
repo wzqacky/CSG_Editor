@@ -101,20 +101,13 @@ public class CsgEditorWindow : EditorWindow
 
         var mesh = new Mesh { name = $"CSG Mesh {id}", hideFlags = HideFlags.DontSave };
         gameObject.GetComponent<MeshFilter>().sharedMesh = mesh;
-        Material previewMaterial = null;
-
-        if (node is PrimitiveNode primitive)
+        var meshRenderer = gameObject.GetComponent<MeshRenderer>();
+        var previewMaterial = new Material(meshRenderer.sharedMaterial)
         {
-            // Copy from the existing material
-            var meshRenderer = gameObject.GetComponent<MeshRenderer>();
-            previewMaterial = new Material(meshRenderer.sharedMaterial)
-            {
-                name = $"CSG Preview Material {id}",
-                hideFlags = HideFlags.DontSave
-            };
-            previewMaterial.color = primitive.color;
-            meshRenderer.sharedMaterial = previewMaterial;
-        }
+            name = $"CSG Preview Material {id}",
+            hideFlags = HideFlags.DontSave
+        };
+        meshRenderer.sharedMaterial = previewMaterial;
 
         m_previews.Add(node, new PreviewInstance
         {
@@ -158,6 +151,14 @@ public class CsgEditorWindow : EditorWindow
         preview.mesh.SetTriangles(triangles, 0);
         preview.mesh.RecalculateNormals();
         preview.mesh.RecalculateBounds();
+        preview.material.color = node.GetColor();
+        SceneView.RepaintAll();
+    }
+
+    private void RefreshPreviewColors()
+    {
+        foreach (var preview in m_previews)
+            preview.Value.material.color = preview.Key.GetColor();
         SceneView.RepaintAll();
     }
 
@@ -248,6 +249,22 @@ public class CsgEditorWindow : EditorWindow
             hdr = false
         };
 
+        var colorSource = new EnumField("Color source", OperationColorSource.InputA)
+        {
+            name = "node-color-source"
+        };
+        colorSource.RegisterValueChangedCallback(evt =>
+        {
+            if (card.userData is OperationNode operation)
+            {
+                operation.colorSource = (OperationColorSource)evt.newValue;
+                color.style.display = operation.colorSource == OperationColorSource.Custom
+                    ? DisplayStyle.Flex : DisplayStyle.None;
+                RefreshPreviewColors();
+            }
+        });
+        card.Add(colorSource);
+
         color.RegisterValueChangedCallback(evt =>
         {
             if (card.userData is PrimitiveNode primitive)
@@ -255,15 +272,10 @@ public class CsgEditorWindow : EditorWindow
                 primitive.color = evt.newValue;
                 hex.SetValueWithoutNotify(
                     "#" + ColorUtility.ToHtmlStringRGB(primitive.color));
-
-                if (m_previews.TryGetValue(primitive, out var preview) &&
-                    preview.material != null)
-                {
-                    preview.material.color = primitive.color;
-                }
-
-                SceneView.RepaintAll();
             }
+            else if (card.userData is OperationNode operation)
+                operation.customColor = evt.newValue;
+            RefreshPreviewColors();
         });
         card.Add(color);
         card.Add(hex);
@@ -295,15 +307,24 @@ public class CsgEditorWindow : EditorWindow
 
         var color = card.Q<ColorField>("node-color");
         var hex = card.Q<TextField>("node-hex");
+        var colorSource = card.Q<EnumField>("node-color-source");
 
-        color.style.display = hex.style.display =
-            node is PrimitiveNode ? DisplayStyle.Flex : DisplayStyle.None;
+        colorSource.style.display = node is OperationNode ? DisplayStyle.Flex : DisplayStyle.None;
+        hex.style.display = node is PrimitiveNode ? DisplayStyle.Flex : DisplayStyle.None;
+        color.style.display = node is PrimitiveNode ||
+            (node is OperationNode colorOperation && colorOperation.colorSource == OperationColorSource.Custom)
+            ? DisplayStyle.Flex : DisplayStyle.None;
 
         if (node is PrimitiveNode colorPrimitive)
         {
             color.SetValueWithoutNotify(colorPrimitive.color);
             hex.SetValueWithoutNotify(
                 "#" + ColorUtility.ToHtmlStringRGB(colorPrimitive.color));
+        }
+        else if (node is OperationNode operation)
+        {
+            colorSource.SetValueWithoutNotify(operation.colorSource);
+            color.SetValueWithoutNotify(operation.customColor);
         }
 
     }
@@ -392,12 +413,9 @@ public class CsgEditorWindow : EditorWindow
                 graphNode.inputContainer.Add(input);
             }
         }
-        else
-        {
-            var card = CreateNodeCard();
-            BindNodeCard(card, entity.node);
-            graphNode.extensionContainer.Add(card);
-        }
+        var card = CreateNodeCard();
+        BindNodeCard(card, entity.node);
+        graphNode.extensionContainer.Add(card);
 
         graphNode.RefreshExpandedState();
         graphNode.RefreshPorts();

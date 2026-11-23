@@ -200,6 +200,11 @@
     padding: 0 10px 10px 10px;
 }
 
+.operation-form {
+    margin-top: 100px;
+    padding: 0 10px 10px 10px;
+}
+
 .field-label {
     margin-top: 5px;
     margin-bottom: 2px;

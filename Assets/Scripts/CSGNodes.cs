@@ -5,6 +5,7 @@ using UnityEngine;
 public abstract class CSGNode
 {
     public abstract float SignedDistance(Vector3 point);
+    public abstract Color GetColor();
     // Returns an axis-aligned box containing the shape
     // as Marching cube requries a finite region to compute
     public abstract Bounds GetBounds();
@@ -15,6 +16,8 @@ public abstract class PrimitiveNode : CSGNode
 {
     public Vector3 center = Vector3.zero;
     public Color color = Color.gray;
+
+    public override Color GetColor() => color;
 }
 
 [Serializable]
@@ -58,11 +61,37 @@ public sealed class BoxNode : PrimitiveNode {
     }
 }
 
+public enum OperationColorSource
+{
+    InputA,
+    InputB,
+    Custom
+}
+
 [Serializable]
 public abstract class OperationNode : CSGNode
 {
     [SerializeReference] public CSGNode leftChild;
     [SerializeReference] public CSGNode rightChild;
+    public OperationColorSource colorSource = OperationColorSource.InputA;
+    public Color customColor = Color.gray;
+
+    public override Color GetColor()
+    {
+        switch (colorSource)
+        {
+            case OperationColorSource.InputA:
+                Validate();
+                return leftChild.GetColor();
+            case OperationColorSource.InputB:
+                Validate();
+                return rightChild.GetColor();
+            case OperationColorSource.Custom:
+                return customColor;
+            default:
+                throw new InvalidOperationException($"Unknown operation color source: {colorSource}.");
+        }
+    }
 
     protected void Validate()
     // Safety guard for empty child that would have made operations break
