@@ -10,6 +10,8 @@ public sealed class CSGStorage
     {
         public int id;
         [SerializeReference] public CSGNode node;
+        public Vector2 graphPosition;
+        public bool hasGraphPosition;
 
         public Entity(int id, CSGNode node)
         {

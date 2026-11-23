@@ -295,14 +295,19 @@ public static class MarchingCube
 
     public static void Extract(float[,,] vals, Bounds bounds, List<Vector3> vertices, List<int> triangles)
     {
-        int cellsPerAxis = vals.GetLength(0) - 1;
-        for (int i = 0; i < cellsPerAxis; i++)
+        int nx = vals.GetLength(0) - 1;
+        int ny = vals.GetLength(1) - 1;
+        int nz = vals.GetLength(2) - 1;
+        if (nx < 1 || ny < 1 || nz < 1)
+            throw new ArgumentException("Sampling grid must contain at least one cell on each axis.", nameof(vals));
+        Vector3 step = new Vector3(bounds.size.x / nx, bounds.size.y / ny, bounds.size.z / nz);
+        for (int i = 0; i < nx; i++)
         {
-            for (int j = 0; j < cellsPerAxis; j++)
+            for (int j = 0; j < ny; j++)
             {
-                for (int k = 0; k < cellsPerAxis; k++)
+                for (int k = 0; k < nz; k++)
                 {
-                    march_cube(i, j, k, vals, bounds, vertices, triangles);
+                    march_cube(i, j, k, vals, bounds, step, vertices, triangles);
                 }
             }
         }
@@ -325,10 +330,9 @@ public static class MarchingCube
     }
 
 
-    static void march_cube(int x, int y, int z, float[,,] vals, Bounds bounds, List<Vector3> vertices, List<int> triangles)
+    static void march_cube(int x, int y, int z, float[,,] vals, Bounds bounds, Vector3 step, List<Vector3> vertices, List<int> triangles)
     {
         int[] tri = get_triangulation(x, y, z, vals);
-        Vector3 step = bounds.size / (vals.GetLength(0) - 1);
 
         // Each group of three edges in the table describes one triangle.
         for (int i = 0; i < tri.Length && tri[i] >= 0; i += 3)

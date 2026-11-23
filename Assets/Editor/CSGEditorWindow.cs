@@ -3,10 +3,14 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using System.Collections.Generic;
 using UnityEditor.UIElements;
+using UnityEditor.Experimental.GraphView;
+using System.Linq;
 
 public class CsgEditorWindow : EditorWindow
 {
-    private VisualElement m_rightPane;
+    private GraphView m_graph;
+    private readonly Dictionary<CSGNode, Node> m_graphNodes = new Dictionary<CSGNode, Node>();
+    private const string DragKey = "CSGNode";
 
     private sealed class PreviewInstance
     {
@@ -21,9 +25,6 @@ public class CsgEditorWindow : EditorWindow
     // Maps each node to the GameObject and mesh currently displaying in the scene view
     private readonly Dictionary<CSGNode, PreviewInstance> m_previews = new Dictionary<CSGNode, PreviewInstance>();
 
-    private TreeView m_tree;
-    private readonly List<TreeViewItemData<CSGNode>> m_treeItems = new List<TreeViewItemData<CSGNode>>();
-
     private readonly List<string> m_nodes = new List<string>
     {
         "Sphere", "Box", "Union", "Intersect", "Diff"
@@ -35,25 +36,40 @@ public class CsgEditorWindow : EditorWindow
         GetWindow<CsgEditorWindow>("CSG Editor");
     }
 
-    private void RefreshTree()
-    // Rebuilds the node list from the nodes in storage
+    private void RefreshAllPreviews()
     {
-        m_treeItems.Clear();
+        var consumed = new HashSet<CSGNode>();
+        foreach (var entity in m_storage.Entities)
+            if (entity.node is OperationNode operation && IsComplete(operation, new HashSet<CSGNode>()))
+            {
+                consumed.Add(operation.leftChild);
+                consumed.Add(operation.rightChild);
+            }
 
         foreach (var entity in m_storage.Entities)
         {
-            m_treeItems.Add(new TreeViewItemData<CSGNode>(entity.id, entity.node));
-        }
+            if (consumed.Contains(entity.node) || !IsComplete(entity.node, new HashSet<CSGNode>()))
+            {
+                RemovePreview(entity.node);
+                continue;
+            }
 
-        m_tree.SetRootItems(m_treeItems);
-        m_tree.Rebuild();
+            if (m_previews.TryGetValue(entity.node, out var preview) &&
+                preview.gameObject != null && preview.mesh != null)
+                UpdatePreview(entity.node);
+            else
+                CreatePreview(entity.node, entity.id);
+        }
     }
 
-    private void RefreshAllPreviews()
-    // Regenerates preview after a node change
+    private static bool IsComplete(CSGNode node, HashSet<CSGNode> visiting)
     {
-        foreach (var entity in m_storage.Entities)
-            UpdatePreview(entity.node);
+        if (node == null || !visiting.Add(node))
+            return false;
+        bool complete = !(node is OperationNode operation) ||
+            (IsComplete(operation.leftChild, visiting) && IsComplete(operation.rightChild, visiting));
+        visiting.Remove(node);
+        return complete;
     }
 
     private void CreatePreview(CSGNode node, int id)
@@ -119,12 +135,25 @@ public class CsgEditorWindow : EditorWindow
         Bounds bounds = node.GetBounds();
         bounds.Expand(bounds.size * 0.25f);
 
-        float[,,] values = Sdf.Sample(node.SignedDistance, bounds, 16);
+        float[,,] values;
+        try
+        {
+            values = Sdf.Sample(node.SignedDistance, bounds, 32);
+        }
+        catch (System.InvalidOperationException exception)
+        {
+            preview.mesh.Clear();
+            Debug.LogError(exception.Message);
+            SceneView.RepaintAll();
+            return;
+        }
         var vertices = new List<Vector3>();
         var triangles = new List<int>();
         MarchingCube.Extract(values, bounds, vertices, triangles);
 
         preview.mesh.Clear();
+        preview.mesh.indexFormat = vertices.Count > 65535
+            ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16;
         preview.mesh.SetVertices(vertices);
         preview.mesh.SetTriangles(triangles, 0);
         preview.mesh.RecalculateNormals();
@@ -158,7 +187,7 @@ public class CsgEditorWindow : EditorWindow
     }
 
     private VisualElement CreateNodeCard()
-    // Creates the editable UI controls for tree elements
+    // Creates the editable UI controls for primitive nodes
     {
         var card = new VisualElement();
         card.style.paddingLeft = 10;
@@ -166,8 +195,6 @@ public class CsgEditorWindow : EditorWindow
         card.style.marginTop = 4;
         card.style.marginBottom = 4;
         card.style.backgroundColor = new Color(0.17f, 0.20f, 0.26f);
-
-        card.Add(new Label { name = "node-title" });
 
         // Primitve position
         var position = new Vector3Field("Position") { name = "node-position" };
@@ -241,28 +268,12 @@ public class CsgEditorWindow : EditorWindow
         card.Add(color);
         card.Add(hex);
 
-        // Children for CSG operation node
-        card.Add(new Label { name = "node-left" });
-        card.Add(new Label { name = "node-right" });
-
-        card.Add(new Button(() =>
-        {
-            if (card.userData is CSGNode node)
-                DeleteNode(node);
-        })
-        { text = "Delete" });
-
         return card;
     }
 
-    private void BindNodeCard(VisualElement card, int index)
-    // Fills a tree row with the selected node's values and fields
+    private void BindNodeCard(VisualElement card, CSGNode node)
     {
-        var node = m_tree.GetItemDataForIndex<CSGNode>(index);
         card.userData = node;
-
-        card.Q<Label>("node-title").text =
-            $"{node.GetType().Name} {m_tree.GetIdForIndex(index)}";
 
         var position = card.Q<Vector3Field>("node-position");
         position.style.display = node is PrimitiveNode
@@ -285,7 +296,6 @@ public class CsgEditorWindow : EditorWindow
         var color = card.Q<ColorField>("node-color");
         var hex = card.Q<TextField>("node-hex");
 
-        bool isPrimitive = node is PrimitiveNode;
         color.style.display = hex.style.display =
             node is PrimitiveNode ? DisplayStyle.Flex : DisplayStyle.None;
 
@@ -296,117 +306,200 @@ public class CsgEditorWindow : EditorWindow
                 "#" + ColorUtility.ToHtmlStringRGB(colorPrimitive.color));
         }
 
-        var left = card.Q<Label>("node-left");
-        var right = card.Q<Label>("node-right");
-        left.style.display = right.style.display = node is OperationNode
-            ? DisplayStyle.Flex : DisplayStyle.None;
+    }
 
-        if (node is OperationNode operation)
+    private sealed class CsgGraphView : GraphView
+    {
+        public System.Action<string, Vector2> createNode;
+        protected override bool canCopySelection => false;
+        protected override bool canCutSelection => false;
+        protected override bool canDuplicateSelection => false;
+
+        public CsgGraphView()
         {
-            left.text = $"Left: {operation.leftChild?.GetType().Name ?? "None"}";
-            right.text = $"Right: {operation.rightChild?.GetType().Name ?? "None"}";
+            style.flexGrow = 1;
+            Insert(0, new GridBackground());
+            this.AddManipulator(new ContentDragger());
+            this.AddManipulator(new SelectionDragger());
+            this.AddManipulator(new RectangleSelector());
+            SetupZoom(ContentZoomer.DefaultMinScale, ContentZoomer.DefaultMaxScale);
+        }
+
+        public override List<Port> GetCompatiblePorts(Port startPort, NodeAdapter adapter)
+        {
+            return ports.ToList().Where(port => port.node != startPort.node &&
+                port.direction != startPort.direction && port.portType == startPort.portType &&
+                CanConnect(startPort, port)).ToList();
+        }
+
+        private static bool CanConnect(Port first, Port second)
+        {
+            Port output = first.direction == Direction.Output ? first : second;
+            Port input = first.direction == Direction.Input ? first : second;
+            var source = ((CSGStorage.Entity)output.node.userData).node;
+            var target = ((CSGStorage.Entity)input.node.userData).node;
+            return !DependsOn(source, target, new HashSet<CSGNode>());
+        }
+
+        public override void BuildContextualMenu(ContextualMenuPopulateEvent evt)
+        {
+            base.BuildContextualMenu(evt);
+            Vector2 position = contentViewContainer.WorldToLocal(evt.mousePosition);
+            foreach (string kind in new[] { "Sphere", "Box", "Union", "Intersect", "Diff" })
+                evt.menu.AppendAction("Add/" + kind, _ => createNode(kind, position));
         }
     }
 
-    private void AddNode(CSGNode node)
-    // Adds a node to storage, creates its preview, refreshes the tree
+    private static CSGNode CreateNode(string kind)
     {
-        var entity = m_storage.Add(node);
-
-        CreatePreview(node, entity.id);
-        RefreshTree();
-    }
-
-    private bool IsReferenced(CSGNode node)
-    // Checks whether an operation directly uses this node as a child
-    {
-        foreach (var entity in m_storage.Entities)
-        {
-            if (entity.node is OperationNode operation &&
-                (ReferenceEquals(operation.leftChild, node) ||
-                ReferenceEquals(operation.rightChild, node)))
-                return true;
-        }
-        return false;
-    }
-
-    private void DeleteNode(CSGNode node)
-    // Removes an unused node from storage, the tree, and preview
-    {
-        // Some nodes depending on this, so cannot directly remove
-        if (IsReferenced(node))
-        {
-            Debug.LogWarning("Delete the operation using this node first.");
-            return;
-        }
-
-        if (!m_storage.Remove(node))
-            return;
-
-        m_tree.ClearSelection();
-        RemovePreview(node);
-        RefreshTree();
-    }
-
-    private CSGNode CreateDraggedNode(string kind)
-    // Creates a primitive or an operation using two selected nodes
-    {
-        if (kind == "Sphere") return new SphereNode();
-        if (kind == "Box") return new BoxNode();
-        if (kind != "Union" && kind != "Intersect" && kind != "Diff")
-            return null;
-
-        // Operations need exactly two selected rows.
-        var indices = new List<int>(m_tree.selectedIndices);
-        if (indices.Count != 2)
-            return null;
-
-        indices.Sort(); // Upper row = left child.
-        var left = m_tree.GetItemDataForIndex<CSGNode>(indices[0]);
-        var right = m_tree.GetItemDataForIndex<CSGNode>(indices[1]);
-
-        // TODO: CSG operations still do not function well for now,
-        // e.g. need to add pos/offset to the shape
-        OperationNode operation;
         switch (kind)
         {
-            case "Union": operation = new UnionNode(); break;
-            case "Intersect": operation = new IntersectNode(); break;
-            case "Diff": operation = new DiffNode(); break;
+            case "Sphere": return new SphereNode();
+            case "Box": return new BoxNode();
+            case "Union": return new UnionNode();
+            case "Intersect": return new IntersectNode();
+            case "Diff": return new DiffNode();
             default: return null;
         }
-
-        operation.leftChild = left;
-        operation.rightChild = right;
-        return operation;
     }
 
-    private void OnDragUpdate(DragUpdatedEvent evt)
-    // Shows whether the current drag can be dropped in the right pane
+    private void AddNode(string kind, Vector2 position)
     {
-        var kind = DragAndDrop.GetGenericData("CSGNode") as string;
-        bool primitive = kind == "Sphere" || kind == "Box";
-        bool operation = kind == "Union" || kind == "Intersect" || kind == "Diff";
-        bool twoSelected = new List<int>(m_tree.selectedIndices).Count == 2;
-
-        DragAndDrop.visualMode = primitive || (operation && twoSelected)
-            ? DragAndDropVisualMode.Copy
-            : DragAndDropVisualMode.Rejected;
-
-        evt.StopPropagation();
-    }
-
-    private void OnDragPerform(DragPerformEvent evt)
-    // Accepts a valid drop and adds the resulting node
-    {
-        var kind = DragAndDrop.GetGenericData("CSGNode") as string;
-        var node = CreateDraggedNode(kind);
+        CSGNode node = CreateNode(kind);
         if (node == null)
             return;
+        var entity = m_storage.Add(node);
+        entity.graphPosition = position;
+        entity.hasGraphPosition = true;
+        AddGraphNode(entity);
+        RefreshAllPreviews();
+    }
 
-        DragAndDrop.AcceptDrag();
-        AddNode(node);
-        evt.StopPropagation();
+    private void AddGraphNode(CSGStorage.Entity entity)
+    {
+        var graphNode = new Node { title = entity.node.GetType().Name + " " + entity.id, userData = entity };
+        graphNode.style.width = 270;
+        var output = graphNode.InstantiatePort(Orientation.Horizontal, Direction.Output, Port.Capacity.Multi, typeof(CSGNode));
+        output.portName = "Shape";
+        graphNode.outputContainer.Add(output);
+
+        if (entity.node is OperationNode)
+        {
+            foreach (string name in new[] { "Left", "Right" })
+            {
+                var input = graphNode.InstantiatePort(Orientation.Horizontal, Direction.Input, Port.Capacity.Single, typeof(CSGNode));
+                input.portName = name;
+                graphNode.inputContainer.Add(input);
+            }
+        }
+        else
+        {
+            var card = CreateNodeCard();
+            BindNodeCard(card, entity.node);
+            graphNode.extensionContainer.Add(card);
+        }
+
+        graphNode.RefreshExpandedState();
+        graphNode.RefreshPorts();
+        graphNode.SetPosition(new Rect(entity.graphPosition, new Vector2(270, 200)));
+        m_graphNodes.Add(entity.node, graphNode);
+        m_graph.AddElement(graphNode);
+    }
+
+    private static bool DependsOn(CSGNode node, CSGNode target, HashSet<CSGNode> visited)
+    {
+        if (ReferenceEquals(node, target))
+            return true;
+        if (node == null || !visited.Add(node) || !(node is OperationNode operation))
+            return false;
+        return DependsOn(operation.leftChild, target, visited) ||
+            DependsOn(operation.rightChild, target, visited);
+    }
+
+    private static void SetInput(Edge edge, CSGNode value)
+    {
+        var entity = (CSGStorage.Entity)edge.input.node.userData;
+        var operation = (OperationNode)entity.node;
+        if (edge.input.portName == "Left")
+            operation.leftChild = value;
+        else
+            operation.rightChild = value;
+    }
+
+    private GraphViewChange OnGraphChanged(GraphViewChange change)
+    {
+        bool changed = false;
+        if (change.elementsToRemove != null)
+        {
+            var removedNodes = new HashSet<CSGNode>();
+            foreach (var element in change.elementsToRemove)
+            {
+                if (element is Edge edge && edge.input != null && edge.output != null)
+                {
+                    var source = ((CSGStorage.Entity)edge.output.node.userData).node;
+                    var operation = (OperationNode)((CSGStorage.Entity)edge.input.node.userData).node;
+                    CSGNode current = edge.input.portName == "Left" ? operation.leftChild : operation.rightChild;
+                    if (ReferenceEquals(source, current))
+                        SetInput(edge, null);
+                    changed = true;
+                }
+                else if (element is Node graphNode && graphNode.userData is CSGStorage.Entity entity)
+                    removedNodes.Add(entity.node);
+            }
+
+            foreach (var entity in m_storage.Entities)
+            {
+                if (entity.node is OperationNode operation)
+                {
+                    if (removedNodes.Contains(operation.leftChild)) operation.leftChild = null;
+                    if (removedNodes.Contains(operation.rightChild)) operation.rightChild = null;
+                }
+            }
+            foreach (var node in removedNodes)
+            {
+                RemovePreview(node);
+                m_storage.Remove(node);
+                m_graphNodes.Remove(node);
+                changed = true;
+            }
+        }
+
+        if (change.edgesToCreate != null)
+        {
+            foreach (var edge in change.edgesToCreate.ToArray())
+            {
+                var source = ((CSGStorage.Entity)edge.output.node.userData).node;
+                var target = ((CSGStorage.Entity)edge.input.node.userData).node;
+                if (DependsOn(source, target, new HashSet<CSGNode>()))
+                {
+                    change.edgesToCreate.Remove(edge);
+                    ShowNotification(new GUIContent("A connection cannot create a cycle."));
+                    continue;
+                }
+                SetInput(edge, source);
+                changed = true;
+            }
+        }
+
+        if (change.movedElements != null)
+            foreach (var element in change.movedElements)
+                if (element is Node graphNode && graphNode.userData is CSGStorage.Entity entity)
+                {
+                    entity.graphPosition = graphNode.GetPosition().position;
+                    entity.hasGraphPosition = true;
+                }
+        if (changed)
+            RefreshAllPreviews();
+        return change;
+    }
+
+    private void RestoreEdge(CSGNode source, Node target, string inputName)
+    {
+        if (source == null || !m_graphNodes.TryGetValue(source, out var sourceNode))
+            return;
+        var output = sourceNode.outputContainer.Children().OfType<Port>().First();
+        var input = target.inputContainer.Children().OfType<Port>().First(port => port.portName == inputName);
+        m_graph.AddElement(output.ConnectTo(input));
     }
 
     public void CreateGUI()
@@ -415,10 +508,8 @@ public class CsgEditorWindow : EditorWindow
         if (m_storage == null)
             m_storage = new CSGStorage();
 
-        // Each editor window contains a root VisualElement object
-        rootVisualElement.Add(new Label("CSG toolbox"));
-
-        // Toggle for pixel-art render
+        var toolbar = new Toolbar();
+        toolbar.Add(new Label("CSG Graph"));
         var pixelArtToggle = new Toggle("Pixel-art render")
         {
             value = PixelArtRenderController.Enabled
@@ -428,21 +519,21 @@ public class CsgEditorWindow : EditorWindow
             if (!PixelArtRenderController.SetEnabled(evt.newValue))
                 pixelArtToggle.SetValueWithoutNotify(false);
         });
-        rootVisualElement.Add(pixelArtToggle);
+        toolbar.Add(pixelArtToggle);
+        rootVisualElement.Add(toolbar);
+        rootVisualElement.Add(new Label("Drag a node from the toolbox or right-click the canvas. Drag sockets to connect; select and Delete to remove."));
 
-        // Create split view
-        var splitView = new TwoPaneSplitView(0, 250, TwoPaneSplitViewOrientation.Horizontal);
+        var splitView = new TwoPaneSplitView(0, 160, TwoPaneSplitViewOrientation.Horizontal);
         splitView.style.flexGrow = 1;
         rootVisualElement.Add(splitView);
 
-        // Two panels as children
         var leftPane = new ListView();
         splitView.Add(leftPane);
-        m_rightPane =  new VisualElement();
-        splitView.Add(m_rightPane);
+        var graph = new CsgGraphView { createNode = AddNode };
+        m_graph = graph;
+        splitView.Add(graph);
 
-        // Start an Editor drag
-        leftPane.makeItem = () => 
+        leftPane.makeItem = () =>
         {
             var label = new Label();
             label.RegisterCallback<PointerDownEvent>(evt =>
@@ -450,7 +541,7 @@ public class CsgEditorWindow : EditorWindow
                 if (evt.button != 0 || !(label.userData is string kind))
                     return;
                 DragAndDrop.PrepareStartDrag();
-                DragAndDrop.SetGenericData("CSGNode", kind);
+                DragAndDrop.SetGenericData(DragKey, kind);
                 DragAndDrop.StartDrag(kind);
                 evt.StopPropagation();
 
@@ -466,32 +557,42 @@ public class CsgEditorWindow : EditorWindow
         };
         leftPane.itemsSource = m_nodes;
 
-        // A dedicated drop zone
-        var dropZone = new Label("Drop a shape here. To use CSG operations, select two rows first (upper = left).");
-        m_rightPane.Add(dropZone);
-        dropZone.style.height = 40;
-
-        // fixedItemHeight adjust the primitive card's height
-        // Increase this when more space needed
-        m_tree = new TreeView
-            {
-                fixedItemHeight = 140,
-                selectionType = SelectionType.Multiple
-            };
-    
-        // Take up the remaining space in the right pane
-        m_tree.style.flexGrow = 1;
-        m_tree.makeItem = CreateNodeCard;
-        m_tree.bindItem = BindNodeCard;
-        m_tree.unbindItem = (item, index) => item.userData = null;
-        m_rightPane.Add(m_tree);
-        RefreshTree();
+        m_graphNodes.Clear();
+        int gridIndex = 0;
         foreach (var entity in m_storage.Entities)
-            CreatePreview(entity.node, entity.id);
+        {
+            if (!entity.hasGraphPosition)
+            {
+                entity.graphPosition = new Vector2(40 + (gridIndex % 3) * 310, 40 + (gridIndex / 3) * 280);
+                entity.hasGraphPosition = true;
+            }
+            AddGraphNode(entity);
+            gridIndex++;
+        }
+        foreach (var entity in m_storage.Entities)
+            if (entity.node is OperationNode operation)
+            {
+                RestoreEdge(operation.leftChild, m_graphNodes[entity.node], "Left");
+                RestoreEdge(operation.rightChild, m_graphNodes[entity.node], "Right");
+            }
+        graph.graphViewChanged = OnGraphChanged;
+        RefreshAllPreviews();
 
-        // Runs while you drag over the pane
-        m_rightPane.RegisterCallback<DragUpdatedEvent>(OnDragUpdate, TrickleDown.TrickleDown);
-        // Runs when release the drag
-        m_rightPane.RegisterCallback<DragPerformEvent>(OnDragPerform, TrickleDown.TrickleDown);
+        graph.RegisterCallback<DragUpdatedEvent>(evt =>
+        {
+            if (!(DragAndDrop.GetGenericData(DragKey) is string kind) || !m_nodes.Contains(kind))
+                return;
+            DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+            evt.StopPropagation();
+        }, TrickleDown.TrickleDown);
+        graph.RegisterCallback<DragPerformEvent>(evt =>
+        {
+            if (!(DragAndDrop.GetGenericData(DragKey) is string kind) || !m_nodes.Contains(kind))
+                return;
+            DragAndDrop.AcceptDrag();
+            AddNode(kind, graph.contentViewContainer.WorldToLocal(evt.mousePosition));
+            DragAndDrop.SetGenericData(DragKey, null);
+            evt.StopPropagation();
+        }, TrickleDown.TrickleDown);
     }
 }

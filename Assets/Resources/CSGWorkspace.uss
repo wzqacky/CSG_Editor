@@ -1,0 +1,339 @@
+.workspace-root {
+    flex-direction: column;
+    flex-grow: 1;
+    min-width: 0;
+    min-height: 0;
+    background-color: rgba(0, 0, 0, 0);
+    color: rgb(35, 48, 67);
+    font-size: 14px;
+}
+
+.app-header {
+    height: 54px;
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    padding-left: 16px;
+    background-color: rgb(255, 255, 255);
+    border-bottom-width: 1px;
+    border-bottom-color: rgb(220, 226, 234);
+}
+
+.brand-mark {
+    width: 38px;
+    height: 30px;
+    margin-right: 10px;
+    border-radius: 6px;
+    background-color: rgb(49, 102, 190);
+    color: white;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+}
+
+.app-title {
+    font-size: 17px;
+    -unity-font-style: bold;
+    color: rgb(29, 42, 62);
+}
+
+.app-subtitle, .section-hint {
+    font-size: 13px;
+    color: rgb(102, 116, 135);
+}
+
+.workspace {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: row;
+}
+
+.sidebar {
+    width: 50%;
+    min-width: 0;
+    min-height: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    background-color: rgb(247, 249, 252);
+    border-right-width: 1px;
+    border-right-color: rgb(220, 226, 234);
+}
+
+.section-title {
+    font-size: 15px;
+    -unity-font-style: bold;
+    color: rgb(37, 51, 70);
+}
+
+.graph-panel {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    min-width: 0;
+    min-height: 0;
+    padding: 0 10px 8px 10px;
+}
+
+.section-header {
+    min-height: 40px;
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+}
+
+.section-header .section-title {
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.section-header .section-hint {
+    flex-shrink: 1;
+    min-width: 0;
+    white-space: normal;
+    -unity-text-align: middle-right;
+}
+
+.graph-scroll {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border-width: 1px;
+    border-color: rgb(216, 224, 234);
+    border-radius: 5px;
+    background-color: rgb(237, 242, 248);
+}
+
+.graph-empty {
+    position: absolute;
+    left: 20px;
+    top: 20px;
+    width: 260px;
+    color: rgb(102, 116, 135);
+    white-space: normal;
+}
+
+.add-menu {
+    position: absolute;
+    width: 180px;
+    padding: 6px;
+    border-width: 1px;
+    border-color: rgb(198, 208, 221);
+    border-radius: 5px;
+    background-color: rgb(255, 255, 255);
+}
+
+.menu-heading {
+    padding: 4px 6px;
+    color: rgb(102, 116, 135);
+    font-size: 12px;
+    -unity-font-style: bold;
+}
+
+.menu-item {
+    margin: 0;
+    padding: 4px 6px;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    color: rgb(35, 48, 67);
+    font-size: 14px;
+    -unity-text-align: middle-left;
+}
+
+.menu-item:hover {
+    background-color: rgb(226, 238, 255);
+}
+
+.node-card {
+    border-width: 1px;
+    border-left-width: 3px;
+    border-color: rgb(202, 212, 225);
+    border-radius: 5px;
+    background-color: rgb(255, 255, 255);
+}
+
+.node-selected {
+    border-top-color: rgb(49, 102, 190);
+    border-right-color: rgb(49, 102, 190);
+    border-bottom-color: rgb(49, 102, 190);
+}
+
+.node-header {
+    height: 29px;
+    flex-direction: row;
+    align-items: center;
+    background-color: rgb(247, 249, 252);
+}
+
+.node-title {
+    flex-grow: 1;
+    padding-left: 9px;
+    padding-top: 6px;
+    color: rgb(35, 48, 67);
+    -unity-font-style: bold;
+}
+
+.node-delete, .node-disconnect {
+    width: 22px;
+    height: 22px;
+    margin: 0 4px;
+    padding: 0;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    color: rgb(102, 116, 135);
+}
+
+.node-delete:hover, .node-disconnect:hover {
+    background-color: rgb(226, 238, 255);
+    color: rgb(35, 48, 67);
+}
+
+.node-caption {
+    color: rgb(103, 116, 133);
+    font-size: 13px;
+}
+
+.node-form {
+    margin-top: 27px;
+    padding: 0 10px 10px 10px;
+}
+
+.field-label {
+    margin-top: 5px;
+    margin-bottom: 2px;
+    color: rgb(75, 89, 107);
+    font-size: 13px;
+    -unity-font-style: bold;
+}
+
+.form-field {
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+}
+
+.color-picker-button {
+    height: 28px;
+    margin: 0;
+    flex-direction: row;
+    align-items: center;
+    -unity-text-align: middle-left;
+    font-size: 14px;
+}
+
+.color-swatch {
+    width: 24px;
+    height: 18px;
+    margin-left: auto;
+    border-width: 1px;
+    border-color: rgb(75, 89, 107);
+}
+
+.color-picker {
+    padding-top: 6px;
+}
+
+.color-saturation-value {
+    height: 120px;
+}
+
+.color-hue {
+    height: 18px;
+    margin-top: 8px;
+}
+
+.color-picker-marker {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    margin-left: -5px;
+    margin-top: -5px;
+    border-width: 2px;
+    border-color: white;
+    border-radius: 5px;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.vector-row {
+    flex-direction: row;
+}
+
+.vector-field {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    min-width: 0;
+    margin: 0 4px 0 0;
+    font-size: 14px;
+}
+
+.vector-field > .unity-base-field__label {
+    min-width: 16px;
+    width: 16px;
+    margin-right: 2px;
+    color: rgb(102, 116, 135);
+}
+
+.form-field .unity-base-text-field__input,
+.vector-field .unity-base-text-field__input {
+    min-width: 0;
+    min-height: 24px;
+    padding: 3px 6px;
+    border-width: 1px;
+    border-color: rgb(198, 208, 221);
+    border-radius: 4px;
+    background-color: rgb(255, 255, 255);
+    color: rgb(35, 48, 67);
+}
+
+.input-row {
+    position: absolute;
+    left: 16px;
+    right: 8px;
+    height: 28px;
+    flex-direction: row;
+    align-items: center;
+}
+
+.input-description {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    color: rgb(75, 89, 107);
+}
+
+.status {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    color: rgb(102, 116, 135);
+    font-size: 13px;
+    white-space: normal;
+    background-color: rgb(247, 249, 252);
+}
+
+.preview-panel {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    min-height: 0;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.preview-header {
+    padding: 0 14px;
+    background-color: rgb(255, 255, 255);
+    border-bottom-width: 1px;
+    border-bottom-color: rgb(220, 226, 234);
+}
+
+.viewport {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    min-height: 0;
+    background-color: rgba(0, 0, 0, 0);
+}

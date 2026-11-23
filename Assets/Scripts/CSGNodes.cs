@@ -105,6 +105,12 @@ public sealed class IntersectNode : OperationNode
 [Serializable]
 public sealed class DiffNode : OperationNode
 {
+    public override Bounds GetBounds()
+    {
+        Validate();
+        return leftChild.GetBounds();
+    }
+
     public override float SignedDistance(Vector3 center)
     {
         Validate();

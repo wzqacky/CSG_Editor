@@ -11,6 +11,7 @@ public sealed class PixelArtRenderer : ScriptableRendererFeature
     private int pixelSize = 6;
 
     public static bool SceneViewEnabled { get; set; } = false;
+    public static Camera PreviewCamera { get; set; }
 
     private PixelArtPass pass;
 
@@ -27,7 +28,8 @@ public sealed class PixelArtRenderer : ScriptableRendererFeature
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     // Called for a camera, enqueue the pass only if this camera should receive the effect
     {
-        if (!SceneViewEnabled || !renderingData.cameraData.isSceneViewCamera)
+        if (!(SceneViewEnabled && renderingData.cameraData.isSceneViewCamera) &&
+            (PreviewCamera == null || renderingData.cameraData.camera != PreviewCamera))
         {
             return;
         }
