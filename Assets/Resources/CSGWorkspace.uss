@@ -41,6 +41,15 @@
     color: rgb(102, 116, 135);
 }
 
+.header-actions {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+}
+
 .workspace {
     flex-grow: 1;
     flex-shrink: 1;
@@ -144,6 +153,59 @@
 
 .menu-item:hover {
     background-color: rgb(226, 238, 255);
+}
+
+.custom-shape-row {
+    flex-direction: row;
+    align-items: center;
+}
+
+.custom-shape-add {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.dialog-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0, 0, 0, 0.45);
+}
+
+.dialog-panel {
+    width: 380px;
+    max-width: 90%;
+    padding: 18px;
+    border-radius: 6px;
+    background-color: rgb(255, 255, 255);
+}
+
+.dialog-title {
+    color: rgb(29, 42, 62);
+    font-size: 17px;
+    -unity-font-style: bold;
+}
+
+.dialog-message {
+    margin-top: 8px;
+    margin-bottom: 10px;
+    white-space: normal;
+}
+
+.dialog-error {
+    color: rgb(180, 40, 40);
+    white-space: normal;
+}
+
+.dialog-actions {
+    margin-top: 12px;
+    flex-direction: row;
+    justify-content: flex-end;
 }
 
 .node-card {

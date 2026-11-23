@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using SimpleFileBrowser;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UIElements;
@@ -35,7 +37,14 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         public Button rightDisconnect;
     }
 
-    private readonly CSGStorage m_storage = new CSGStorage();
+    private CSGStorage m_storage = new CSGStorage();
+    private CSGHistory m_history;
+    private bool m_restoring;
+    private Button m_undoButton;
+    private Button m_redoButton;
+    private Button m_groupButton;
+    private string m_statePath;
+    private string m_objPath;
     private readonly Dictionary<CSGNode, PreviewInstance> m_previews = new Dictionary<CSGNode, PreviewInstance>();
     private readonly Dictionary<CSGNode, NodeView> m_nodes = new Dictionary<CSGNode, NodeView>();
     private bool m_previewError;
@@ -49,7 +58,16 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private VisualElement m_graphViewport;
     private ScrollView m_graphScroll;
     private VisualElement m_addMenu;
+    private VisualElement m_customMenu;
+    private VisualElement m_dialog;
+    private Label m_dialogTitle;
+    private Label m_dialogMessage;
+    private Label m_dialogError;
+    private TextField m_dialogName;
+    private Button m_dialogConfirm;
+    private Action m_dialogAction;
     private Vector2 m_addPosition;
+    private Vector2 m_addMenuPosition;
     private float m_graphZoom = 1f;
     private bool m_panning;
     private Vector2 m_panStart;
@@ -64,7 +82,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private Rect m_originalCameraRect;
     private Vector3 m_originalCameraPosition;
     private Quaternion m_originalCameraRotation;
-    private CSGNode m_selected;
+    private readonly HashSet<CSGNode> m_selected = new HashSet<CSGNode>();
     private NodeView m_draggedNode;
     private Vector2 m_dragOffset;
     private CSGNode m_connectionSource;
@@ -142,11 +160,17 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_document = gameObject.AddComponent<UIDocument>();
         m_document.panelSettings = m_panelSettings;
         m_document.rootVisualElement.styleSheets.Add(stylesheet);
+        m_statePath = Path.Combine(Application.persistentDataPath, "csg-state.json");
+        m_objPath = Path.Combine(Application.persistentDataPath, "csg-object.obj");
         BuildInterface();
+        m_history = new CSGHistory(CSGState.Serialize(m_storage));
+        UpdateHistoryButtons();
     }
 
     private void OnDestroy()
     {
+        if (FileBrowser.IsOpen)
+            FileBrowser.HideDialog();
         if (PixelArtRenderer.PreviewCamera == m_camera)
             PixelArtRenderer.PreviewCamera = null;
         foreach (var node in new List<CSGNode>(m_previews.Keys))
@@ -165,16 +189,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         var root = m_document.rootVisualElement;
         root.AddToClassList("workspace-root");
         root.RegisterCallback<PointerDownEvent>(DismissMenuOnOutsideClick, TrickleDown.TrickleDown);
-        root.RegisterCallback<KeyDownEvent>(evt =>
-        {
-            if (evt.keyCode == KeyCode.Escape &&
-                (m_addMenu.style.display == DisplayStyle.Flex || m_previewMenu.style.display == DisplayStyle.Flex))
-            {
-                CloseAddMenu();
-                m_previewMenu.style.display = DisplayStyle.None;
-                evt.StopPropagation();
-            }
-        });
+        root.RegisterCallback<KeyDownEvent>(OnKeyDown, TrickleDown.TrickleDown);
 
         var header = new VisualElement();
         header.AddToClassList("app-header");
@@ -186,6 +201,13 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         headerText.Add(StyledLabel("CSG Studio", "app-title"));
         headerText.Add(StyledLabel("Constructive solid geometry", "app-subtitle"));
         header.Add(headerText);
+        var actions = new VisualElement();
+        actions.AddToClassList("header-actions");
+        actions.Add(new Button(NewDocument) { text = "New" });
+        actions.Add(new Button(ShowSaveStateDialog) { text = "Save" });
+        actions.Add(new Button(ShowImportStateDialog) { text = "Import" });
+        actions.Add(new Button(ShowExportObjDialog) { text = "Export OBJ" });
+        header.Add(actions);
         root.Add(header);
 
         var workspace = new VisualElement { name = "workspace" };
@@ -202,7 +224,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         var graphHeader = new VisualElement();
         graphHeader.AddToClassList("section-header");
         graphHeader.Add(StyledLabel("CSG tree", "section-title"));
-        graphHeader.Add(StyledLabel("Right-click to add  /  Scroll to zoom  /  Middle-drag to pan", "section-hint"));
+        graphHeader.Add(StyledLabel("Shift-click to select  /  Right-click for actions  /  Scroll to zoom", "section-hint"));
         graphPanel.Add(graphHeader);
 
         m_graphScroll = new ScrollView(ScrollViewMode.VerticalAndHorizontal) { name = "graph-scroll" };
@@ -217,6 +239,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_graphScroll.Add(m_canvasContainer);
         m_canvas = new VisualElement();
         m_canvas.name = "canvas";
+        m_canvas.focusable = true;
         m_canvas.style.position = Position.Absolute;
         m_canvas.style.width = CanvasWidth;
         m_canvas.style.height = CanvasHeight;
@@ -234,10 +257,24 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_emptyGraph.pickingMode = PickingMode.Ignore;
         m_canvas.Add(m_emptyGraph);
 
-        m_addMenu = new VisualElement { name = "add-menu" };
+        m_addMenu = new ScrollView(ScrollViewMode.Vertical) { name = "add-menu" };
         m_addMenu.AddToClassList("add-menu");
         m_addMenu.style.display = DisplayStyle.None;
         graphPanel.Add(m_addMenu);
+        m_addMenu.RegisterCallback<GeometryChangedEvent>(_ => ClampAddMenu());
+        m_addMenu.Add(StyledLabel("EDIT", "menu-heading"));
+        bool mac = Application.platform == RuntimePlatform.OSXPlayer || Application.platform == RuntimePlatform.OSXEditor;
+        string shortcut = mac ? "Cmd+" : "Ctrl+";
+        m_undoButton = new Button(() => { CloseAddMenu(); m_canvas.Focus(); Undo(); }) { text = "Undo    " + shortcut + "Z" };
+        m_redoButton = new Button(() => { CloseAddMenu(); m_canvas.Focus(); Redo(); }) { text = "Redo    " + shortcut + "Y" };
+        m_undoButton.AddToClassList("menu-item");
+        m_redoButton.AddToClassList("menu-item");
+        m_addMenu.Add(m_undoButton);
+        m_addMenu.Add(m_redoButton);
+        m_groupButton = new Button(ShowCreateShapeDialog) { text = "Create custom shape..." };
+        m_groupButton.AddToClassList("menu-item");
+        m_groupButton.SetEnabled(false);
+        m_addMenu.Add(m_groupButton);
         m_addMenu.Add(StyledLabel("SHAPES", "menu-heading"));
         AddMenuButton("Sphere", () => new SphereNode());
         AddMenuButton("Box", () => new BoxNode());
@@ -245,6 +282,9 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         AddMenuButton("Union", () => new UnionNode());
         AddMenuButton("Intersect", () => new IntersectNode());
         AddMenuButton("Difference", () => new DiffNode());
+        m_customMenu = new VisualElement();
+        m_addMenu.Add(m_customMenu);
+        RefreshCustomMenu();
         m_addMenu.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
 
         m_status = new Label("Right-click the canvas to add a node.") { name = "status" };
@@ -293,6 +333,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_canvas.RegisterCallback<PointerMoveEvent>(OnGraphPointerMove);
         m_canvas.RegisterCallback<PointerUpEvent>(OnGraphPointerUp);
         m_canvas.RegisterCallback<PointerCaptureOutEvent>(OnGraphCaptureOut);
+        BuildDialog(root);
     }
 
     private static Label StyledLabel(string text, string className)
@@ -302,10 +343,395 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         return label;
     }
 
+    private void BuildDialog(VisualElement root)
+    {
+        m_dialog = new VisualElement { name = "confirmation-dialog" };
+        m_dialog.AddToClassList("dialog-overlay");
+        m_dialog.style.display = DisplayStyle.None;
+        var panel = new VisualElement();
+        panel.AddToClassList("dialog-panel");
+        m_dialog.Add(panel);
+        m_dialogTitle = StyledLabel("", "dialog-title");
+        panel.Add(m_dialogTitle);
+        m_dialogMessage = StyledLabel("", "dialog-message");
+        panel.Add(m_dialogMessage);
+        m_dialogName = new TextField("Name") { maxLength = 60 };
+        panel.Add(m_dialogName);
+        m_dialogError = StyledLabel("", "dialog-error");
+        panel.Add(m_dialogError);
+        var buttons = new VisualElement();
+        buttons.AddToClassList("dialog-actions");
+        buttons.Add(new Button(CloseDialog) { text = "Cancel" });
+        m_dialogConfirm = new Button(() => m_dialogAction?.Invoke());
+        buttons.Add(m_dialogConfirm);
+        panel.Add(buttons);
+        m_dialog.RegisterCallback<KeyDownEvent>(evt =>
+        {
+            if (evt.keyCode == KeyCode.Escape)
+            {
+                CloseDialog();
+                evt.StopPropagation();
+            }
+        });
+        root.Add(m_dialog);
+    }
+
+    private void ShowDialog(string title, string message, string confirm, bool showName, Action action)
+    {
+        CloseAddMenu();
+        m_previewMenu.style.display = DisplayStyle.None;
+        m_dialogTitle.text = title;
+        m_dialogMessage.text = message;
+        m_dialogError.text = "";
+        m_dialogName.style.display = showName ? DisplayStyle.Flex : DisplayStyle.None;
+        m_dialogConfirm.text = confirm;
+        m_dialogAction = action;
+        m_dialog.style.display = DisplayStyle.Flex;
+        m_dialog.BringToFront();
+        if (showName) m_dialogName.Focus();
+        else m_dialogConfirm.Focus();
+    }
+
+    private void CloseDialog()
+    {
+        m_dialog.style.display = DisplayStyle.None;
+        m_dialogAction = null;
+        m_canvas.Focus();
+    }
+
+    private void NewDocument()
+    {
+        if (FileBrowser.IsOpen) return;
+        if (m_storage.Entities.Count == 0 && m_storage.CustomShapes.Count == 0)
+        {
+            ResetDocument();
+            return;
+        }
+        ShowDialog("New canvas?", "This discards the current graph and custom shapes. This cannot be undone.",
+            "New", false, () => { CloseDialog(); ResetDocument(); });
+    }
+
+    private void ResetDocument()
+    {
+        RestoreState(new CSGStorage());
+        m_history = new CSGHistory(CSGState.Serialize(m_storage));
+        UpdateHistoryButtons();
+        m_graphZoom = 1f;
+        m_canvas.style.scale = new Scale(Vector3.one);
+        m_canvasContainer.style.width = CanvasWidth;
+        m_canvasContainer.style.height = CanvasHeight;
+        m_graphScroll.scrollOffset = Vector2.zero;
+        m_statePath = Path.Combine(Application.persistentDataPath, "csg-state.json");
+        m_objPath = Path.Combine(Application.persistentDataPath, "csg-object.obj");
+        CloseAddMenu();
+        m_previewMenu.style.display = DisplayStyle.None;
+        m_status.text = "New canvas.";
+    }
+
+    private void ShowCreateShapeDialog()
+    {
+        if (m_selected.Count < 2)
+        {
+            m_status.text = "Shift-click at least two nodes to create a custom shape.";
+            return;
+        }
+        int number = m_storage.CustomShapes.Count + 1;
+        string name;
+        do
+        {
+            name = "Custom shape " + number++;
+        }
+        while (HasCustomShapeName(name));
+        m_dialogName.value = name;
+        ShowDialog("Create custom shape", "Save a snapshot of the selected nodes and their inputs.",
+            "Create", true, CreateCustomShape);
+    }
+
+    private bool HasCustomShapeName(string name)
+    {
+        foreach (var shape in m_storage.CustomShapes)
+            if (string.Equals(shape.name, name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
+    }
+
+    private void CreateCustomShape()
+    {
+        try
+        {
+            string snapshot = CSGCustomShapes.Capture(m_storage, m_selected);
+            m_storage.AddCustomShape(m_dialogName.value, snapshot);
+        }
+        catch (ArgumentException exception)
+        {
+            m_dialogError.text = exception.Message;
+            return;
+        }
+        RefreshCustomMenu();
+        RecordHistory();
+        CloseDialog();
+        m_status.text = "Custom shape saved to the add menu.";
+    }
+
+    private void RefreshCustomMenu()
+    {
+        m_customMenu.Clear();
+        if (m_storage.CustomShapes.Count == 0)
+            return;
+        m_customMenu.Add(StyledLabel("CUSTOM SHAPES", "menu-heading"));
+        foreach (var shape in m_storage.CustomShapes)
+        {
+            var row = new VisualElement();
+            row.AddToClassList("custom-shape-row");
+            var add = new Button(() => AddCustomShape(shape)) { text = shape.name, tooltip = "Add " + shape.name };
+            add.AddToClassList("menu-item");
+            add.AddToClassList("custom-shape-add");
+            row.Add(add);
+            var remove = new Button(() =>
+            {
+                m_storage.RemoveCustomShape(shape);
+                RefreshCustomMenu();
+                RecordHistory();
+                m_status.text = "Custom shape removed.";
+            }) { text = "x", tooltip = "Remove custom shape" };
+            remove.AddToClassList("node-delete");
+            row.Add(remove);
+            m_customMenu.Add(row);
+        }
+    }
+
+    private void AddCustomShape(CSGStorage.CustomShape shape)
+    {
+        var added = CSGCustomShapes.AddCopy(m_storage, shape);
+        Vector2 min = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
+        Vector2 max = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
+        foreach (var entity in added)
+        {
+            min = Vector2.Min(min, entity.graphPosition);
+            max = Vector2.Max(max, entity.graphPosition);
+        }
+        Vector2 offset = m_addPosition - min;
+        float maxX = CanvasWidth - NodeWidth - 8;
+        float maxY = CanvasHeight - 145 - 8;
+        if (8 - min.x <= maxX - max.x)
+            offset.x = Mathf.Clamp(offset.x, 8 - min.x, maxX - max.x);
+        if (8 - min.y <= maxY - max.y)
+            offset.y = Mathf.Clamp(offset.y, 8 - min.y, maxY - max.y);
+        ClearSelection();
+        foreach (var entity in added)
+        {
+            Vector2 position = entity.graphPosition + offset;
+            entity.graphPosition = new Vector2(Mathf.Clamp(position.x, 8, maxX), Mathf.Clamp(position.y, 8, maxY));
+            entity.hasGraphPosition = true;
+            AddNodeView(entity);
+            m_selected.Add(entity.node);
+            m_nodes[entity.node].element.AddToClassList("node-selected");
+        }
+        foreach (var entity in added)
+            if (entity.node is OperationNode operation)
+                UpdateOperationView(m_nodes[entity.node], operation);
+        m_emptyGraph.style.display = DisplayStyle.None;
+        UpdateSelection();
+        CloseAddMenu();
+        m_canvas.Focus();
+        RefreshAllPreviews();
+        RecordHistory();
+        if (!m_previewError) m_status.text = "Added " + shape.name + ".";
+    }
+
+    private void OnKeyDown(KeyDownEvent evt)
+    {
+        if (FileBrowser.IsOpen || m_activePointer != -1 || m_dialog.style.display == DisplayStyle.Flex)
+            return;
+        if ((evt.actionKey || evt.ctrlKey) && !evt.altKey &&
+            (evt.keyCode == KeyCode.Z || evt.keyCode == KeyCode.Y))
+        {
+            if (evt.keyCode == KeyCode.Y || evt.shiftKey) Redo();
+            else Undo();
+            evt.StopPropagation();
+            evt.PreventDefault();
+        }
+        else if (evt.keyCode == KeyCode.Escape &&
+            (m_addMenu.style.display == DisplayStyle.Flex || m_previewMenu.style.display == DisplayStyle.Flex))
+        {
+            CloseAddMenu();
+            m_previewMenu.style.display = DisplayStyle.None;
+            evt.StopPropagation();
+        }
+    }
+
+    private void RecordHistory()
+    {
+        if (m_restoring) return;
+        m_history.Record(CSGState.Serialize(m_storage));
+        UpdateHistoryButtons();
+    }
+
+    private void UpdateHistoryButtons()
+    {
+        m_undoButton.SetEnabled(m_history.CanUndo);
+        m_redoButton.SetEnabled(m_history.CanRedo);
+    }
+
+    private void Undo()
+    {
+        if (!m_history.CanUndo) return;
+        RestoreState(CSGState.Deserialize(m_history.Undo()));
+        UpdateHistoryButtons();
+        if (!m_previewError) m_status.text = "Undid graph edit.";
+    }
+
+    private void Redo()
+    {
+        if (!m_history.CanRedo) return;
+        RestoreState(CSGState.Deserialize(m_history.Redo()));
+        UpdateHistoryButtons();
+        if (!m_previewError) m_status.text = "Redid graph edit.";
+    }
+
+    private void RestoreState(CSGStorage storage)
+    {
+        m_restoring = true;
+        try
+        {
+            foreach (var node in new List<CSGNode>(m_previews.Keys))
+                RemovePreview(node);
+            foreach (var view in m_nodes.Values)
+                m_canvas.Remove(view.element);
+            m_nodes.Clear();
+            m_selected.Clear();
+            m_storage = storage;
+            foreach (var entity in m_storage.Entities)
+                AddNodeView(entity);
+            foreach (var entity in m_storage.Entities)
+                if (entity.node is OperationNode operation)
+                    UpdateOperationView(m_nodes[entity.node], operation);
+            m_emptyGraph.style.display = m_storage.Entities.Count == 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            UpdateSelection();
+            RefreshCustomMenu();
+            m_lines.MarkDirtyRepaint();
+            RefreshAllPreviews();
+        }
+        finally
+        {
+            m_restoring = false;
+        }
+    }
+
+    private void ShowSaveStateDialog()
+    {
+        ShowFileDialog(true, m_statePath, "Save CSG state", "CSG State", ".json", SaveState);
+    }
+
+    private void ShowImportStateDialog()
+    {
+        ShowFileDialog(false, m_statePath, "Import CSG state", "CSG State", ".json", ImportState);
+    }
+
+    private void ShowExportObjDialog()
+    {
+        if (m_previewError)
+        {
+            ReportFileError("OBJ export failed", new InvalidOperationException("Fix the preview error before exporting."));
+            return;
+        }
+        ShowFileDialog(true, m_objPath, "Export OBJ", "OBJ", ".obj", ExportObj);
+    }
+
+    private void ShowFileDialog(bool save, string path, string title, string filterName,
+        string extension, Action<string> onSelected)
+    {
+#if UNITY_EDITOR || UNITY_STANDALONE
+        if (FileBrowser.IsOpen)
+            return;
+        FileBrowser.SetFilters(false, new FileBrowser.Filter(filterName, extension));
+        FileBrowser.SetDefaultFilter(extension);
+        FileBrowser.OnSuccess success = paths =>
+        {
+            m_canvas.Focus();
+            if (paths != null && paths.Length == 1 && !string.IsNullOrEmpty(paths[0]))
+                onSelected(paths[0]);
+            else
+                ReportFileError("File selection failed", new InvalidOperationException("No file was selected."));
+        };
+        FileBrowser.OnCancel cancel = () => m_canvas.Focus();
+        if (save)
+            FileBrowser.ShowSaveDialog(success, cancel, FileBrowser.PickMode.Files, false,
+                Path.GetDirectoryName(path), Path.GetFileName(path), title, "Save");
+        else
+            FileBrowser.ShowLoadDialog(success, cancel, FileBrowser.PickMode.Files, false,
+                Path.GetDirectoryName(path), null, title, "Open");
+#else
+        m_status.text = "File dialogs are supported on Windows, macOS, and Linux.";
+        Debug.LogError(m_status.text, this);
+#endif
+    }
+
+    private void SaveState(string path)
+    {
+        try
+        {
+            File.WriteAllText(path, CSGState.Serialize(m_storage));
+            m_statePath = Path.GetFullPath(path);
+            m_status.text = "Saved state to " + m_statePath;
+        }
+        catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException ||
+            exception is ArgumentException || exception is NotSupportedException)
+        {
+            ReportFileError("Save failed", exception);
+        }
+    }
+
+    private void ImportState(string path)
+    {
+        try
+        {
+            CSGStorage storage = CSGState.Deserialize(File.ReadAllText(path));
+            RestoreState(storage);
+            RecordHistory();
+            m_statePath = Path.GetFullPath(path);
+            if (!m_previewError) m_status.text = "Imported state from " + m_statePath;
+        }
+        catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException ||
+            exception is ArgumentException || exception is NotSupportedException || exception is FormatException)
+        {
+            ReportFileError("Import failed", exception);
+        }
+    }
+
+    private void ExportObj(string path)
+    {
+        try
+        {
+            if (m_previewError)
+                throw new InvalidOperationException("Fix the preview error before exporting.");
+            var meshes = new List<KeyValuePair<string, Mesh>>();
+            foreach (var entity in m_storage.Entities)
+                if (m_previews.TryGetValue(entity.node, out var preview))
+                    meshes.Add(new KeyValuePair<string, Mesh>("CSG_" + entity.id, preview.mesh));
+            string obj = CSGObjExporter.Serialize(meshes);
+            File.WriteAllText(path, obj);
+            m_objPath = Path.GetFullPath(path);
+            m_status.text = "Exported OBJ to " + m_objPath;
+        }
+        catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException ||
+            exception is ArgumentException || exception is NotSupportedException || exception is InvalidOperationException)
+        {
+            ReportFileError("OBJ export failed", exception);
+        }
+    }
+
+    private void ReportFileError(string message, Exception exception)
+    {
+        m_status.text = message + ": " + exception.Message;
+        Debug.LogError(m_status.text, this);
+    }
+
     private void AddMenuButton(string name, Func<CSGNode> factory)
     {
         var button = new Button(() =>
         {
+            m_canvas.Focus();
             AddNode(factory(), m_addPosition);
             CloseAddMenu();
         }) { text = name };
@@ -317,6 +743,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         if (m_activePointer != -1)
             return;
+        if (evt.button == 0 && (evt.target == m_canvas || evt.target == m_canvasContainer ||
+            evt.target == m_graphScroll.contentContainer || evt.target == m_graphViewport))
+        {
+            ClearSelection();
+            m_canvas.Focus();
+        }
         if (evt.button == 2)
         {
             CloseAddMenu();
@@ -327,9 +759,13 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             m_canvas.CapturePointer(evt.pointerId);
             evt.StopPropagation();
         }
-        else if (evt.button == 1 && (evt.target == m_canvas || evt.target == m_canvasContainer ||
-            evt.target == m_graphScroll.contentContainer || evt.target == m_graphViewport))
+        else if (evt.button == 1)
         {
+            if (evt.target is VisualElement target &&
+                (target.GetFirstAncestorOfType<TextField>() != null ||
+                 target.GetFirstAncestorOfType<FloatField>() != null))
+                return;
+            m_canvas.Focus();
             OpenAddMenu(evt.position);
             evt.StopPropagation();
         }
@@ -338,14 +774,26 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private void OpenAddMenu(Vector2 screenPosition)
     {
         m_addPosition = m_canvas.WorldToLocal(screenPosition);
-        Vector2 position = m_addMenu.parent.WorldToLocal(screenPosition);
-        Rect bounds = m_addMenu.parent.WorldToLocal(m_graphViewport.worldBound);
-        position.x = Mathf.Clamp(position.x, bounds.xMin, Mathf.Max(bounds.xMin, bounds.xMax - 180));
-        position.y = Mathf.Clamp(position.y, bounds.yMin, Mathf.Max(bounds.yMin, bounds.yMax - 220));
-        m_addMenu.style.left = position.x;
-        m_addMenu.style.top = position.y;
+        m_addMenuPosition = m_addMenu.parent.WorldToLocal(screenPosition);
+        m_addMenu.style.left = m_addMenuPosition.x;
+        m_addMenu.style.top = m_addMenuPosition.y;
+        m_addMenu.style.maxHeight = Mathf.Max(0, m_graphViewport.worldBound.height);
         m_addMenu.style.display = DisplayStyle.Flex;
         m_addMenu.BringToFront();
+        ClampAddMenu();
+    }
+
+    private void ClampAddMenu()
+    {
+        if (m_addMenu == null || m_addMenu.style.display != DisplayStyle.Flex)
+            return;
+        Rect bounds = m_addMenu.parent.WorldToLocal(m_graphViewport.worldBound);
+        float width = m_addMenu.resolvedStyle.width;
+        float height = m_addMenu.resolvedStyle.height;
+        if (float.IsNaN(width) || float.IsNaN(height) || width <= 0 || height <= 0)
+            return;
+        m_addMenu.style.left = Mathf.Clamp(m_addMenuPosition.x, bounds.xMin, Mathf.Max(bounds.xMin, bounds.xMax - width));
+        m_addMenu.style.top = Mathf.Clamp(m_addMenuPosition.y, bounds.yMin, Mathf.Max(bounds.yMin, bounds.yMax - height));
     }
 
     private void DismissMenuOnOutsideClick(PointerDownEvent evt)
@@ -397,6 +845,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         AddNodeView(entity);
         SelectNode(node);
         RefreshAllPreviews();
+        RecordHistory();
     }
 
     private void AddNodeView(CSGStorage.Entity entity)
@@ -410,6 +859,15 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         card.AddToClassList("node-card");
         card.style.borderLeftColor = entity.node is PrimitiveNode
             ? new Color(0.18f, 0.48f, 0.85f) : new Color(0.81f, 0.47f, 0.16f);
+        card.RegisterCallback<PointerDownEvent>(evt =>
+        {
+            if (evt.button != 0 || !evt.shiftKey || m_activePointer != -1)
+                return;
+            SelectNode(entity.node, true);
+            m_canvas.Focus();
+            evt.StopPropagation();
+            evt.PreventDefault();
+        }, TrickleDown.TrickleDown);
 
         var header = new VisualElement();
         header.AddToClassList("node-header");
@@ -452,7 +910,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         });
         m_nodes.Add(entity.node, view);
         m_canvas.Add(card);
-        if (entity.node is OperationNode addedOperation)
+        if (entity.node is OperationNode addedOperation &&
+            addedOperation.leftChild == null && addedOperation.rightChild == null)
             UpdateOperationView(view, addedOperation);
         card.RegisterCallback<GeometryChangedEvent>(_ =>
         {
@@ -503,6 +962,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         if (evt.button != 0 || m_activePointer != -1)
             return;
         SelectNode(view.entity.node);
+        m_canvas.Focus();
         m_draggedNode = view;
         m_dragOffset = m_canvas.WorldToLocal(evt.position) - view.entity.graphPosition;
         m_activePointer = evt.pointerId;
@@ -515,6 +975,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         if (evt.button != 0 || m_activePointer != -1)
             return;
         SelectNode(view.entity.node);
+        m_canvas.Focus();
         m_connectionSource = view.entity.node;
         m_connectionEnd = m_canvas.WorldToLocal(evt.position);
         m_activePointer = evt.pointerId;
@@ -576,6 +1037,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
                     m_status.text = "Connected. Drag another output to replace an input.";
                     RefreshAllPreviews();
                     UpdateOperationView(view, operation);
+                    RecordHistory();
                 }
                 break;
             }
@@ -595,6 +1057,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void ClearGraphDrag()
     {
+        if (m_draggedNode != null)
+            RecordHistory();
         m_activePointer = -1;
         m_draggedNode = null;
         m_connectionSource = null;
@@ -645,17 +1109,43 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         return name + " #" + entity.id;
     }
 
-    private void SelectNode(CSGNode node)
+    private void ClearSelection()
     {
-        if (m_selected != null && m_nodes.TryGetValue(m_selected, out var previous))
-            previous.element.RemoveFromClassList("node-selected");
-        m_selected = node;
+        foreach (var node in m_selected)
+            if (m_nodes.TryGetValue(node, out var view))
+                view.element.RemoveFromClassList("node-selected");
+        m_selected.Clear();
+        UpdateSelection();
+    }
+
+    private void SelectNode(CSGNode node, bool additive = false)
+    {
+        if (!additive)
+            ClearSelection();
         if (node != null && m_nodes.TryGetValue(node, out var selected))
         {
-            selected.element.AddToClassList("node-selected");
-            if (!m_previewError)
-                m_status.text = "Editing " + NodeName(selected.entity) + ".";
+            if (additive && m_selected.Contains(node))
+            {
+                m_selected.Remove(node);
+                selected.element.RemoveFromClassList("node-selected");
+            }
+            else
+            {
+                m_selected.Add(node);
+                selected.element.AddToClassList("node-selected");
+            }
         }
+        UpdateSelection();
+    }
+
+    private void UpdateSelection()
+    {
+        m_groupButton.SetEnabled(m_selected.Count >= 2);
+        if (!m_previewError && m_selected.Count > 1)
+            m_status.text = m_selected.Count + " nodes selected. Right-click to create a custom shape.";
+        else if (!m_previewError && m_selected.Count == 1)
+            foreach (var node in m_selected)
+                m_status.text = "Editing " + NodeName(m_nodes[node].entity) + ".";
     }
 
     private void AddPrimitiveFields(VisualElement form, PrimitiveNode primitive)
@@ -671,6 +1161,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
                 sphere.radius = Mathf.Max(0.01f, evt.newValue);
                 radius.SetValueWithoutNotify(sphere.radius);
                 RefreshAllPreviews();
+                RecordHistory();
             });
             form.Add(radius);
         }
@@ -707,6 +1198,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             custom.style.display = operation.colorSource == OperationColorSource.Custom
                 ? DisplayStyle.Flex : DisplayStyle.None;
             RefreshPreviewColors();
+            RecordHistory();
         });
     }
 
@@ -824,6 +1316,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
                 element.ReleasePointer(evt.pointerId);
                 evt.StopPropagation();
             });
+            element.RegisterCallback<PointerCaptureOutEvent>(_ => RecordHistory());
         }
 
         RegisterPickerInput(saturationValue, false);
@@ -870,6 +1363,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             z.SetValueWithoutNotify(next.z);
             apply(next);
             RefreshAllPreviews();
+            RecordHistory();
         };
         x.RegisterValueChangedCallback(_ => update());
         y.RegisterValueChangedCallback(_ => update());
@@ -892,6 +1386,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             RefreshAllPreviews();
             UpdateOperationView(view, operation);
             m_lines.MarkDirtyRepaint();
+            RecordHistory();
         }) { text = "x", tooltip = "Disconnect input" };
         disconnect.AddToClassList("node-disconnect");
         row.Add(disconnect);
@@ -936,11 +1431,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_nodes.Remove(node);
         m_storage.Remove(node);
         m_emptyGraph.style.display = m_storage.Entities.Count == 0 ? DisplayStyle.Flex : DisplayStyle.None;
-        if (ReferenceEquals(m_selected, node))
-            m_selected = null;
+        m_selected.Remove(node);
+        UpdateSelection();
         RefreshAllPreviews();
         m_lines.MarkDirtyRepaint();
         m_status.text = "Node deleted.";
+        RecordHistory();
     }
 
     private static bool DependsOn(CSGNode node, CSGNode target, HashSet<CSGNode> visited)
