@@ -60,11 +60,9 @@ Shader "Hidden/TexelSplat/Splat"
                 };
                 // A slight overlap hides holes between samples on one surface.
                 float2 corner = (corners[input.vertexID] - 0.5) * 1.08;
+                // URP renders the probe faces into bottom-left-origin textures.
                 float2 uv = (float2(cell) + 0.5 + corner) / _FaceSize;
                 float2 faceXY = uv * 2.0 - 1.0;
-                #if UNITY_UV_STARTS_AT_TOP
-                    faceXY.y = -faceXY.y;
-                #endif
                 float3 ray = _FaceForward +
                     faceXY.x * _FaceRight + faceXY.y * _FaceUp;
                 float3 worldPosition = _ProbeOrigin + d * ray;

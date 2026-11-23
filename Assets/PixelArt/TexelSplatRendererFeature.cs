@@ -11,26 +11,49 @@ public sealed class TexelSplatRendererFeature : ScriptableRendererFeature
     private const string SplatShaderName = "Hidden/TexelSplat/Splat";
 
     public static TexelSplatProbe ActiveProbe;
+    public static TexelSplatProbe PreviewProbe { get; set; }
+
+    [SerializeField] private Shader depthShader;
+    [SerializeField] private Shader splatShader;
+    [SerializeField] private Shader quantizeShader;
+    [SerializeField, Range(1, 4)] private int quantizeBitsPerChannel = 4;
 
     private Material depthMaterial;
     private Material splatMaterial;
+    private Material quantizeMaterial;
     private DepthCapturePass depthPass;
+    private ColorCapturePass colorPass;
     private SplatPass splatPass;
 
     public override void Create()
     {
         CoreUtils.Destroy(depthMaterial);
         CoreUtils.Destroy(splatMaterial);
-        depthMaterial = CoreUtils.CreateEngineMaterial(DepthShaderName);
-        splatMaterial = CoreUtils.CreateEngineMaterial(SplatShaderName);
+        CoreUtils.Destroy(quantizeMaterial);
+        depthMaterial = CoreUtils.CreateEngineMaterial(depthShader != null ? depthShader : Shader.Find(DepthShaderName));
+        splatMaterial = CoreUtils.CreateEngineMaterial(splatShader != null ? splatShader : Shader.Find(SplatShaderName));
+        quantizeMaterial = CoreUtils.CreateEngineMaterial(quantizeShader != null
+            ? quantizeShader : Shader.Find(PixelArtRenderer.QuantizeShaderName));
+        if (quantizeMaterial != null)
+            quantizeMaterial.SetInt("_BitsPerChannel", quantizeBitsPerChannel);
         depthPass = new DepthCapturePass { renderPassEvent = RenderPassEvent.AfterRenderingOpaques };
-        splatPass = new SplatPass { renderPassEvent = RenderPassEvent.BeforeRenderingSkybox };
+        colorPass = new ColorCapturePass
+        {
+            renderPassEvent = RenderPassEvent.AfterRenderingTransparents,
+            requiresIntermediateTexture = true
+        };
+        splatPass = new SplatPass
+        {
+            renderPassEvent = RenderPassEvent.BeforeRenderingSkybox,
+            requiresIntermediateTexture = true
+        };
     }
 
     protected override void Dispose(bool disposing)
     {
         CoreUtils.Destroy(depthMaterial);
         CoreUtils.Destroy(splatMaterial);
+        CoreUtils.Destroy(quantizeMaterial);
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
@@ -43,10 +66,15 @@ public sealed class TexelSplatRendererFeature : ScriptableRendererFeature
                 depthPass.Setup(marker, depthMaterial);
                 renderer.EnqueuePass(depthPass);
             }
+            if (quantizeMaterial != null && marker.ColorTarget != null)
+            {
+                colorPass.Setup(marker, quantizeMaterial);
+                renderer.EnqueuePass(colorPass);
+            }
             return;
         }
 
-        TexelSplatProbe probe = ActiveProbe;
+        TexelSplatProbe probe = PreviewProbe?.ViewCamera == camera ? PreviewProbe : ActiveProbe;
         if (probe == null || !probe.Ready || camera != probe.ViewCamera || splatMaterial == null)
             return;
 
@@ -87,6 +115,31 @@ public sealed class TexelSplatRendererFeature : ScriptableRendererFeature
                 source, destination, material, 0);
             graph.AddBlitPass(parameters, passName: "Texel Splat Copy Probe Depth");
             marker.DepthPassRecorded = true;
+        }
+    }
+
+    private sealed class ColorCapturePass : ScriptableRenderPass
+    {
+        private TexelSplatCaptureCamera marker;
+        private Material material;
+
+        public void Setup(TexelSplatCaptureCamera captureMarker, Material paletteMaterial)
+        {
+            marker = captureMarker;
+            material = paletteMaterial;
+        }
+
+        public override void RecordRenderGraph(RenderGraph graph, ContextContainer frameData)
+        {
+            var resources = frameData.Get<UniversalResourceData>();
+            TextureHandle source = resources.activeColorTexture;
+            if (!source.IsValid())
+                return;
+
+            TextureHandle destination = graph.ImportTexture(marker.ColorTarget);
+            var parameters = new RenderGraphUtils.BlitMaterialParameters(source, destination, material, 0);
+            graph.AddBlitPass(parameters, passName: "Texel Splat Quantize Probe Color");
+            marker.ColorPassRecorded = true;
         }
     }
 

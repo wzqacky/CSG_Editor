@@ -7,6 +7,7 @@ public sealed class TexelSplatProbe : System.IDisposable
 {
     // 6 faces for the cubemap
     public const int FaceCount = 6;
+    public const int DefaultFaceSize = 128;
 
     // Facing direction of each face
     private static readonly Vector3[] Forwards =
@@ -39,8 +40,7 @@ public sealed class TexelSplatProbe : System.IDisposable
     public TexelSplatProbe(Camera viewCamera, int faceSize)
     {
         ViewCamera = viewCamera;
-        // TODO: paper uses 384 for each face, no?
-        FaceSize = Mathf.Clamp(faceSize, 256, 384);
+        FaceSize = Mathf.Clamp(faceSize, 128, 384);
         Origin = viewCamera.transform.position;
 
         captureObject = new GameObject("Texel Splat Capture Camera")
@@ -101,8 +101,8 @@ public sealed class TexelSplatProbe : System.IDisposable
         captureCamera.cullingMask = ViewCamera.cullingMask;
         captureObject.transform.position = origin;
 
-        // URP needs a depth attachment while rendering geometry. Keep it on a
-        // temporary camera target and copy only its color into the cached face.
+        // URP needs a depth attachment while rendering geometry. The capture
+        // passes write quantized color and linear depth into separate face textures.
         var targetDesc = Colors[0].descriptor;
         targetDesc.depthBufferBits = 24;
         var cameraTarget = RenderTexture.GetTemporary(targetDesc);
@@ -124,7 +124,9 @@ public sealed class TexelSplatProbe : System.IDisposable
         {
             // Here, transform scene's objects into face's local frame
             captureObject.transform.rotation = Quaternion.LookRotation(Forwards[face], Ups[face]);
+            captureMarker.ColorTarget = ColorHandles[face];
             captureMarker.DepthTarget = DepthHandles[face];
+            captureMarker.ColorPassRecorded = false;
             captureMarker.DepthPassRecorded = false;
 
             var request = new UniversalRenderPipeline.SingleCameraRequest
@@ -144,7 +146,11 @@ public sealed class TexelSplatProbe : System.IDisposable
                 Debug.LogError("Texel-splat depth capture did not run. Install the renderer feature first.");
                 return false;
             }
-            Graphics.CopyTexture(cameraTarget, 0, 0, Colors[face], 0, 0);
+            if (!captureMarker.ColorPassRecorded)
+            {
+                Debug.LogError("Texel-splat color quantization did not run. Check the renderer feature and its Lab shader.");
+                return false;
+            }
         }
 
         return true;
@@ -161,13 +167,10 @@ public sealed class TexelSplatProbe : System.IDisposable
         {
             ColorHandles[face]?.Release();
             DepthHandles[face]?.Release();
-            if (Colors[face] != null)
-                Object.DestroyImmediate(Colors[face]);
-            if (Depths[face] != null)
-                Object.DestroyImmediate(Depths[face]);
+            CoreUtils.Destroy(Colors[face]);
+            CoreUtils.Destroy(Depths[face]);
         }
-        if (captureObject != null)
-            Object.DestroyImmediate(captureObject);
+        CoreUtils.Destroy(captureObject);
     }
 }
 

@@ -27,7 +27,8 @@ MonoBehaviour:
   m_RendererFeatures:
   - {fileID: 7833122117494664109}
   - {fileID: 7906006933182843261}
-  m_RendererFeatureMap: ad6b866f10d7b46c7d8923fc6ac7b76dl
+  - {fileID: 7906006933182843262}
+  m_RendererFeatureMap: ad6b866f10d7b46c7d8923fc6ac7b76d7e8923fc6ac7b76d
   xrSystemData: {fileID: 0}
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   m_AssetVersion: 3
@@ -96,3 +97,20 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PixelArtRenderer
   m_Active: 1
   pixelSize: 6
+--- !u!114 &7906006933182843262
+MonoBehaviour:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5d953296fbbe439fa533946ae945c631, type: 3}
+  m_Name: TexelSplatRendererFeature
+  m_EditorClassIdentifier: Assembly-CSharp::TexelSplatRendererFeature
+  m_Active: 1
+  depthShader: {fileID: 4800000, guid: b1d3dc96c0434dfda5aa45279a6a3c1f, type: 3}
+  splatShader: {fileID: 4800000, guid: 4df5e0bccba442229b68cfacfe7edc62, type: 3}
+  quantizeShader: {fileID: 4800000, guid: 36af6e45d2cb4464c8c8c63855da2a75, type: 3}
+  quantizeBitsPerChannel: 4

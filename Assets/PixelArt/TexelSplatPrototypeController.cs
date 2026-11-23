@@ -9,7 +9,6 @@ public static class TexelSplatPrototypeController
 {
     private const string PreferenceKey = "TexelSplatPrototype.Enabled";
     private const string RendererPath = "Assets/Settings/PC_Renderer.asset";
-    private const int FaceSize = 384;
 
     private static TexelSplatProbe probe;
     private static bool captureRequested;
@@ -91,7 +90,7 @@ public static class TexelSplatPrototypeController
         if (probe == null || probe.ViewCamera != sceneView.camera)
         {
             ReleaseProbe();
-            probe = new TexelSplatProbe(sceneView.camera, FaceSize);
+            probe = new TexelSplatProbe(sceneView.camera, TexelSplatProbe.DefaultFaceSize);
             captureRequested = true;
         }
 

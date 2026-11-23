@@ -75,6 +75,9 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private VisualElement m_viewport;
     private VisualElement m_previewMenu;
     private Button m_pixelArtButton;
+    private Button m_texelSplatButton;
+    private TexelSplatProbe m_texelSplatProbe;
+    private bool m_texelSplatCaptureRequested;
     private Vector2 m_previewMenuPosition;
     private Label m_status;
     private Camera m_camera;
@@ -165,6 +168,29 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         BuildInterface();
         m_history = new CSGHistory(CSGState.Serialize(m_storage));
         UpdateHistoryButtons();
+    }
+
+    private void LateUpdate()
+    {
+        if (!m_texelSplatCaptureRequested || m_texelSplatProbe == null)
+            return;
+
+        m_texelSplatCaptureRequested = false;
+        if (!m_texelSplatProbe.CaptureAt(m_texelSplatProbe.Origin))
+        {
+            ReleaseTexelSplatProbe();
+            m_status.text = "Texel splat could not capture the 3D preview.";
+            return;
+        }
+
+        if (PixelArtRenderer.PreviewCamera == m_camera)
+            PixelArtRenderer.PreviewCamera = null;
+        TexelSplatRendererFeature.PreviewProbe = m_texelSplatProbe;
+    }
+
+    private void OnDisable()
+    {
+        ReleaseTexelSplatProbe();
     }
 
     private void OnDestroy()
@@ -324,11 +350,17 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_previewMenu.RegisterCallback<GeometryChangedEvent>(_ => ClampPreviewMenu());
         m_pixelArtButton = new Button(() =>
         {
-            PixelArtRenderer.PreviewCamera = PixelArtRenderer.PreviewCamera == m_camera ? null : m_camera;
+            bool enablePixelArt = PixelArtRenderer.PreviewCamera != m_camera;
+            if (enablePixelArt)
+                ReleaseTexelSplatProbe();
+            PixelArtRenderer.PreviewCamera = enablePixelArt ? m_camera : null;
             m_previewMenu.style.display = DisplayStyle.None;
         }) { name = "pixel-art-toggle" };
         m_pixelArtButton.AddToClassList("menu-item");
         m_previewMenu.Add(m_pixelArtButton);
+        m_texelSplatButton = new Button(ToggleTexelSplat) { name = "texel-splat-toggle" };
+        m_texelSplatButton.AddToClassList("menu-item");
+        m_previewMenu.Add(m_texelSplatButton);
         m_previewMenu.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
         m_canvas.RegisterCallback<PointerMoveEvent>(OnGraphPointerMove);
         m_canvas.RegisterCallback<PointerUpEvent>(OnGraphPointerUp);
@@ -1481,6 +1513,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
                 CreatePreview(entity.node, entity.id);
             UpdatePreview(entity.node);
         }
+        if (m_texelSplatProbe != null)
+            m_texelSplatCaptureRequested = true;
         if (hadPreviewError && !m_previewError)
             m_status.text = "Preview updated.";
     }
@@ -1489,6 +1523,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         foreach (var preview in m_previews)
             preview.Value.material.color = preview.Key.GetColor();
+        if (m_texelSplatProbe != null)
+            m_texelSplatCaptureRequested = true;
     }
 
     private void CreatePreview(CSGNode node, int id)
@@ -1540,9 +1576,39 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         if (!m_previews.TryGetValue(node, out var preview))
             return;
         m_previews.Remove(node);
-        if (preview.gameObject != null) Destroy(preview.gameObject);
+        if (preview.gameObject != null)
+        {
+            preview.gameObject.SetActive(false);
+            Destroy(preview.gameObject);
+        }
         if (preview.mesh != null) Destroy(preview.mesh);
         if (preview.material != null) Destroy(preview.material);
+    }
+
+    private void ToggleTexelSplat()
+    {
+        if (m_texelSplatProbe != null)
+        {
+            ReleaseTexelSplatProbe();
+        }
+        else
+        {
+            m_texelSplatProbe = new TexelSplatProbe(m_camera, TexelSplatProbe.DefaultFaceSize);
+            m_texelSplatCaptureRequested = true;
+        }
+        m_previewMenu.style.display = DisplayStyle.None;
+    }
+
+    private void ReleaseTexelSplatProbe()
+    {
+        if (m_texelSplatProbe == null)
+            return;
+
+        if (TexelSplatRendererFeature.PreviewProbe == m_texelSplatProbe)
+            TexelSplatRendererFeature.PreviewProbe = null;
+        m_texelSplatProbe.Dispose();
+        m_texelSplatProbe = null;
+        m_texelSplatCaptureRequested = false;
     }
 
     private void UpdateCameraRect()
@@ -1562,6 +1628,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         {
             m_pixelArtButton.text = PixelArtRenderer.PreviewCamera == m_camera
                 ? "Disable pixel art" : "Enable pixel art";
+            m_texelSplatButton.text = m_texelSplatProbe != null
+                ? "Disable texel splat" : "Enable texel splat";
             m_previewMenuPosition = m_previewMenu.parent.WorldToLocal(evt.position);
             m_previewMenu.style.left = m_previewMenuPosition.x;
             m_previewMenu.style.top = m_previewMenuPosition.y;

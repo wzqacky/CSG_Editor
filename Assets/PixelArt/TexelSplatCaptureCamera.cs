@@ -11,7 +11,13 @@ A small marker and message carrier attached to the probe's capture camera
 */
 {
     [System.NonSerialized]
+    public RTHandle ColorTarget;
+
+    [System.NonSerialized]
     public RTHandle DepthTarget;
+
+    [System.NonSerialized]
+    public bool ColorPassRecorded;
 
     [System.NonSerialized]
     public bool DepthPassRecorded;

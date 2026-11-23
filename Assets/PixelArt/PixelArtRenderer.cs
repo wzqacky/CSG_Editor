@@ -14,10 +14,11 @@ public sealed class PixelArtRenderer : ScriptableRendererFeature
     public int PixelSize => pixelSize;
 
     // Shader/quantization material
-    private const string QuantizeShaderName = "Custom/PixelArt/LabColorQuantize";
+    internal const string QuantizeShaderName = "Custom/PixelArt/LabColorQuantize";
     private Material quantizeMaterial;
 
     public static bool SceneViewEnabled = false;
+    public static Camera PreviewCamera { get; set; }
 
     private PixelArtPass pass;
 

@@ -16,7 +16,6 @@ public static class PixelArtRenderController
     static PixelArtRenderController()
     {
         PixelArtRenderer.SceneViewEnabled = EditorPrefs.GetBool(PreferenceKey, false);
-        public static Camera PreviewCamera { get; set; }
         RenderPipelineManager.beginCameraRendering += SnapSceneCamera;
         RenderPipelineManager.endCameraRendering += RestoreSceneCamera;
     }
