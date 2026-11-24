@@ -70,6 +70,7 @@ public static class CSGState
         public int right;
         public OperationColorSource colorSource;
         public string shapeName;
+        public float shapeScale; // Scalar sizes from older files are already baked into their members.
         public List<int> members;
     }
 
@@ -116,6 +117,8 @@ public static class CSGState
             else if (entity.node is CustomShapeNode shape)
             {
                 data.shapeName = shape.name;
+                data.shapeScale = shape.bakedScale;
+                data.size = shape.Scale;
                 data.rotation = shape.Rotation;
                 data.hasRotationPivot = shape.rotationPivot.HasValue;
                 data.center = shape.rotationPivot.GetValueOrDefault();
@@ -168,12 +171,18 @@ public static class CSGState
                 case "DiffNode": node = new DiffNode(); break;
                 case "CustomShapeNode":
                     if (string.IsNullOrWhiteSpace(data.shapeName) || data.members == null ||
-                        (data.hasRotationPivot && !Finite(data.center)))
+                        !Finite(data.shapeScale) || data.shapeScale < 0 || (data.hasRotationPivot && !Finite(data.center)))
                         throw new FormatException("Invalid custom shape instance.");
+                    float bakedScale = data.shapeScale == 0 ? 1f : data.shapeScale;
+                    Vector3 shapeSize = data.size.Equals(Vector3.zero) ? Vector3.one * bakedScale : data.size;
+                    if (!Finite(shapeSize) || shapeSize.x <= 0 || shapeSize.y <= 0 || shapeSize.z <= 0)
+                        throw new FormatException("Invalid custom shape size.");
                     node = new CustomShapeNode
                     {
                         name = data.shapeName,
                         Rotation = data.rotation,
+                        Scale = shapeSize,
+                        bakedScale = bakedScale,
                         rotationPivot = data.hasRotationPivot ? data.center : (Vector3?)null
                     };
                     break;
@@ -407,7 +416,11 @@ public static class CSGCustomShapes
         if (node is BoxNode box)
             return new BoxNode { center = box.center, rotation = box.rotation, color = box.color, size = box.size };
         if (node is CustomShapeNode shape)
-            return new CustomShapeNode { name = shape.name, Rotation = shape.Rotation, rotationPivot = shape.rotationPivot };
+            return new CustomShapeNode
+            {
+                name = shape.name, Rotation = shape.Rotation, Scale = shape.Scale,
+                bakedScale = shape.bakedScale, rotationPivot = shape.rotationPivot
+            };
         OperationNode result;
         if (node is UnionNode) result = new UnionNode();
         else if (node is IntersectNode) result = new IntersectNode();

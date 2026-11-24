@@ -227,9 +227,19 @@ public sealed class CustomShapeNode : CSGNode
     private readonly List<CSGNode> m_outputs = new List<CSGNode>();
 
     internal Vector3? rotationPivot;
+    internal float bakedScale = 1f;
     public Vector3 Rotation { get; internal set; }
-    public Vector3 Position => rotationPivot ?? GetBounds().center;
+    public Vector3 Scale { get; internal set; } = Vector3.one;
+    public Vector3 Position => rotationPivot ?? GetOutputBounds().center;
     public override bool IsComplete => m_outputs.Count > 0;
+    private bool HasScale => !Scale.Equals(Vector3.one * bakedScale);
+
+    [NonSerialized] private Vector3 m_cachedScale;
+    [NonSerialized] private Vector3 m_cachedRotation;
+    [NonSerialized] private float m_cachedBakedScale;
+    [NonSerialized] private Matrix4x4 m_scaleTransform;
+    [NonSerialized] private Matrix4x4 m_inverseScaleTransform;
+    [NonSerialized] private float m_distanceScale;
 
     public void MoveTo(Vector3 position) => Translate(position - Position);
 
@@ -248,6 +258,46 @@ public sealed class CustomShapeNode : CSGNode
             else if (member is CustomShapeNode shape)
                 shape.Translate(delta);
         }
+    }
+
+    public void ScaleTo(Vector3 size)
+    {
+        if (!(size.x > 0 && size.y > 0 && size.z > 0) ||
+            float.IsInfinity(size.x) || float.IsInfinity(size.y) || float.IsInfinity(size.z))
+            throw new ArgumentOutOfRangeException(nameof(size), "Size must be positive and finite on every axis.");
+        if (size.Equals(Scale))
+            return;
+        rotationPivot ??= Position;
+        Scale = size;
+    }
+
+    internal Matrix4x4 GetScaleTransform()
+    {
+        if (!HasScale)
+            return Matrix4x4.identity;
+
+        UpdateScaleTransform();
+        Vector3 pivot = rotationPivot ??= GetOutputBounds().center;
+        Matrix4x4 transform = m_scaleTransform;
+        Vector3 offset = pivot - transform.MultiplyVector(pivot);
+        transform.SetColumn(3, new Vector4(offset.x, offset.y, offset.z, 1f));
+        return transform;
+    }
+
+    private void UpdateScaleTransform()
+    {
+        if (m_cachedScale.Equals(Scale) && m_cachedRotation.Equals(Rotation) && m_cachedBakedScale == bakedScale)
+            return;
+
+        Vector3 factors = Scale / bakedScale;
+        Quaternion orientation = Quaternion.Euler(Rotation);
+        m_scaleTransform = Matrix4x4.TRS(Vector3.zero, orientation, factors) *
+            Matrix4x4.Rotate(Quaternion.Inverse(orientation));
+        m_inverseScaleTransform = m_scaleTransform.inverse;
+        m_distanceScale = Mathf.Min(factors.x, Mathf.Min(factors.y, factors.z));
+        m_cachedScale = Scale;
+        m_cachedRotation = Rotation;
+        m_cachedBakedScale = bakedScale;
     }
 
     public void RotateTo(Vector3 angles)
@@ -324,15 +374,35 @@ public sealed class CustomShapeNode : CSGNode
 
     public override float SignedDistance(Vector3 point)
     {
+        float distanceScale = 1f;
+        if (HasScale)
+        {
+            UpdateScaleTransform();
+            Vector3 pivot = rotationPivot ??= GetOutputBounds().center;
+            point = pivot + m_inverseScaleTransform.MultiplyVector(point - pivot);
+            distanceScale = m_distanceScale;
+        }
+
         float distance = float.PositiveInfinity;
         foreach (var output in m_outputs)
             distance = Mathf.Min(distance, output.SignedDistance(point));
-        return distance;
+        return distance * distanceScale;
     }
 
     public override Color GetColor() => IsComplete ? m_outputs[0].GetColor() : Color.gray;
 
     public override Bounds GetBounds()
+    {
+        Bounds bounds = GetOutputBounds();
+        if (!HasScale || !IsComplete)
+            return bounds;
+
+        UpdateScaleTransform();
+        rotationPivot ??= bounds.center;
+        return TransformBounds(bounds, rotationPivot.Value, m_scaleTransform);
+    }
+
+    private Bounds GetOutputBounds()
     {
         if (!IsComplete)
             return new Bounds();

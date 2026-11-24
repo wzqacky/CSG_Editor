@@ -1566,6 +1566,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         AddVectorFields(form, "Position", shape.Position, false, shape.MoveTo);
         AddVectorFields(form, "Rotation (°)", shape.Rotation, false, shape.RotateTo).name = "rotation-fields";
+        AddVectorFields(form, "Size (×)", shape.Scale, true, shape.ScaleTo).name = "size-fields";
         form.Add(StyledLabel("Color", "field-label"));
         AddColorPicker(form, shape.GetColor(), color =>
         {
@@ -1771,6 +1772,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         }
         void SetFields(Vector3 next)
         {
+            value = next;
             x.SetValueWithoutNotify(next.x);
             y.SetValueWithoutNotify(next.y);
             z.SetValueWithoutNotify(next.z);
@@ -1779,6 +1781,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         void UpdateFields()
         {
             var next = new Vector3(x.value, y.value, z.value);
+            if (float.IsNaN(next.x) || float.IsNaN(next.y) || float.IsNaN(next.z) ||
+                float.IsInfinity(next.x) || float.IsInfinity(next.y) || float.IsInfinity(next.z))
+            {
+                SetFields(value);
+                return;
+            }
             if (positive)
                 next = Vector3.Max(Vector3.one * 0.01f, next);
             SetFields(next);
@@ -1988,6 +1996,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         var vertices = new List<Vector3>();
         var triangles = new List<int>();
         MarchingCube.Extract(values, bounds, vertices, triangles);
+        Matrix4x4 scale = Matrix4x4.identity;
+        for (var owner = m_nodes[node].shapeOwner; owner != null; owner = owner.shapeOwner)
+            scale = ((CustomShapeNode)owner.entity.node).GetScaleTransform() * scale;
+        if (!scale.isIdentity)
+            for (int i = 0; i < vertices.Count; i++)
+                vertices[i] = scale.MultiplyPoint3x4(vertices[i]);
         preview.mesh.Clear();
         preview.mesh.indexFormat = vertices.Count > 65535
             ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16;
