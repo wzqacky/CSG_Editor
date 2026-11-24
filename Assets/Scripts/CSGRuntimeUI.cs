@@ -36,6 +36,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         public VisualElement output;
         public VisualElement expandedToolbar;
         public VisualElement expandedOutput;
+        public Toggle visibilityToggle;
         public Action rebuildForm;
         public Action refreshPosition;
         public VisualElement left;
@@ -1100,6 +1101,22 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
         view.output = AddPort(card, "Output  ", false, 44);
         view.output.RegisterCallback<PointerDownEvent>(evt => StartConnection(evt, view));
+        view.visibilityToggle = new Toggle
+        {
+            name = "scene-visibility",
+            text = "Visible",
+            tooltip = "Show this result in the 3D scene",
+            value = !entity.hidden
+        };
+        view.visibilityToggle.AddToClassList("scene-visibility");
+        view.visibilityToggle.AddToClassList("node-visibility");
+        view.visibilityToggle.RegisterValueChangedCallback(evt =>
+        {
+            entity.hidden = !evt.newValue;
+            RefreshPreviewMeshes(false);
+            RecordHistory();
+        });
+        card.Add(view.visibilityToggle);
         card.RegisterCallback<PointerDownEvent>(evt =>
         {
             if (evt.button == 0)
@@ -1159,6 +1176,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         m_canvas.Focus();
         view.expanded = expanded;
+        view.visibilityToggle.EnableInClassList("node-visibility", !expanded);
+        (expanded ? view.expandedToolbar : view.card).Add(view.visibilityToggle);
         SelectNode(expanded ? null : view.entity.node);
         UpdateNodeVisibility();
     }
@@ -1880,11 +1899,16 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void RefreshAllPreviews()
     {
-        bool hadPreviewError = m_previewError;
-        m_previewError = false;
         m_storage.RefreshCustomShapeOutputs();
         foreach (var view in m_nodes.Values)
             view.refreshPosition?.Invoke();
+        RefreshPreviewMeshes(true);
+    }
+
+    private void RefreshPreviewMeshes(bool updateExisting)
+    {
+        bool hadPreviewError = m_previewError;
+        m_previewError = false;
         var consumed = new HashSet<CSGNode>();
         foreach (var entity in m_storage.Entities)
             if (entity.node is OperationNode operation && operation.IsComplete)
@@ -1896,19 +1920,30 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         foreach (var entity in m_storage.Entities)
         {
             // An unconnected custom shape keeps the previews of its individual outputs.
-            if (entity.node is CustomShapeNode || consumed.Contains(entity.node) || !entity.node.IsComplete)
+            if (entity.node is CustomShapeNode || consumed.Contains(entity.node) || !entity.node.IsComplete ||
+                IsSceneHidden(m_nodes[entity.node]))
             {
                 RemovePreview(entity.node);
                 continue;
             }
-            if (!m_previews.ContainsKey(entity.node))
+            bool needsPreview = !m_previews.ContainsKey(entity.node);
+            if (needsPreview)
                 CreatePreview(entity.node, entity.id);
-            UpdatePreview(entity.node);
+            if (needsPreview || updateExisting || hadPreviewError)
+                UpdatePreview(entity.node);
         }
         if (m_texelSplatProbe != null)
             m_texelSplatCaptureRequested = true;
         if (hadPreviewError && !m_previewError)
             m_status.text = "Preview updated.";
+    }
+
+    private static bool IsSceneHidden(NodeView view)
+    {
+        for (var owner = view; owner != null; owner = owner.shapeOwner)
+            if (owner.entity.hidden)
+                return true;
+        return false;
     }
 
     private void RefreshPreviewColors()

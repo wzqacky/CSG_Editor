@@ -19,6 +19,7 @@ public sealed class CSGStorage
         [SerializeReference] public CSGNode node;
         public Vector2 graphPosition;
         public bool hasGraphPosition;
+        public bool hidden;
 
         public Entity(int id, CSGNode node)
         {

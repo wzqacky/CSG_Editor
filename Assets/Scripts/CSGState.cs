@@ -56,6 +56,7 @@ public static class CSGState
         public string type;
         public Vector2 position;
         public bool hasPosition;
+        public bool hidden;
         public Vector3 center;
         public Vector3 rotation;
         public bool hasRotationPivot;
@@ -88,7 +89,7 @@ public static class CSGState
             var data = new NodeData
             {
                 id = entity.id, type = entity.node.GetType().Name,
-                position = entity.graphPosition, hasPosition = entity.hasGraphPosition
+                position = entity.graphPosition, hasPosition = entity.hasGraphPosition, hidden = entity.hidden
             };
             if (entity.node is PrimitiveNode primitive)
             {
@@ -197,6 +198,7 @@ public static class CSGState
             var entity = storage.AddWithId(data.id, node);
             entity.graphPosition = data.position;
             entity.hasGraphPosition = data.hasPosition;
+            entity.hidden = data.hidden;
             nodes.Add(data.id, node);
         }
         if (document.nextId < storage.NextId)
@@ -328,6 +330,7 @@ public static class CSGCustomShapes
             var added = snapshot.AddWithId(entity.id, copy);
             added.graphPosition = entity.graphPosition;
             added.hasGraphPosition = entity.hasGraphPosition;
+            added.hidden = entity.hidden;
         }
         if (copies.Count != included.Count)
             throw new InvalidOperationException("The selected graph contains a missing node.");
@@ -361,6 +364,7 @@ public static class CSGCustomShapes
             var copy = storage.Add(entity.node);
             copy.graphPosition = entity.graphPosition;
             copy.hasGraphPosition = entity.hasGraphPosition;
+            copy.hidden = entity.hidden;
             added.Add(copy);
         }
         return added;

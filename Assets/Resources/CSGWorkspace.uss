@@ -297,6 +297,17 @@
     font-size: 13px;
 }
 
+.scene-visibility {
+    margin: 0;
+    flex-shrink: 0;
+}
+
+.node-visibility {
+    position: absolute;
+    top: 35px;
+    left: 8px;
+}
+
 .node-form {
     margin-top: 27px;
     padding: 0 10px 10px 10px;
