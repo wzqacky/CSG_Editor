@@ -1414,6 +1414,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private void AddPrimitiveFields(VisualElement form, PrimitiveNode primitive)
     {
         AddVectorFields(form, "Position", primitive.center, false, value => primitive.center = value);
+        AddVectorFields(form, "Rotation (°)", primitive.rotation, false, value => primitive.rotation = value)
+            .name = "rotation-fields";
         if (primitive is SphereNode sphere)
         {
             form.Add(StyledLabel("Radius", "field-label"));
@@ -1440,7 +1442,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void AddCustomShapeFields(VisualElement form, CustomShapeNode shape)
     {
-        AddVectorFields(form, "Position", shape.GetBounds().center, false, shape.MoveTo);
+        AddVectorFields(form, "Position", shape.Position, false, shape.MoveTo);
+        AddVectorFields(form, "Rotation (°)", shape.Rotation, false, shape.RotateTo).name = "rotation-fields";
         form.Add(StyledLabel("Color", "field-label"));
         AddColorPicker(form, shape.GetColor(), color =>
         {
@@ -1615,7 +1618,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         mesh.SetNextIndex(0);
     }
 
-    private void AddVectorFields(VisualElement form, string label, Vector3 value, bool positive, Action<Vector3> apply)
+    private VisualElement AddVectorFields(VisualElement form, string label, Vector3 value, bool positive, Action<Vector3> apply)
     {
         form.Add(StyledLabel(label, "field-label"));
         var row = new VisualElement();
@@ -1644,6 +1647,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         y.RegisterValueChangedCallback(_ => update());
         z.RegisterValueChangedCallback(_ => update());
         form.Add(row);
+        return row;
     }
 
     private void AddInputRow(NodeView view, OperationNode operation, bool left, float top)

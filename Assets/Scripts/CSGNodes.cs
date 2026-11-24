@@ -17,6 +17,7 @@ public abstract class CSGNode
 public abstract class PrimitiveNode : CSGNode
 {
     public Vector3 center = Vector3.zero;
+    public Vector3 rotation;
     public Color color = Color.gray;
 
     public override Color GetColor() => color;
@@ -41,10 +42,21 @@ public sealed class SphereNode : PrimitiveNode
 [Serializable]
 public sealed class BoxNode : PrimitiveNode {
     public Vector3 size = Vector3.one; // Width, height, depth
+    [NonSerialized] private Vector3 m_sampleRotation;
+    [NonSerialized] private Quaternion m_inverseRotation = Quaternion.identity;
 
     public override float SignedDistance(Vector3 point)
     {
         Vector3 offset = point - center;
+        if (!rotation.Equals(Vector3.zero))
+        {
+            if (!rotation.Equals(m_sampleRotation))
+            {
+                m_inverseRotation = Quaternion.Inverse(Quaternion.Euler(rotation));
+                m_sampleRotation = rotation;
+            }
+            offset = m_inverseRotation * offset;
+        }
         Vector3 q = new Vector3(
             Mathf.Abs(offset.x),
             Mathf.Abs(offset.y),
@@ -59,8 +71,14 @@ public sealed class BoxNode : PrimitiveNode {
 
     public override Bounds GetBounds()
     {
-        return new Bounds(center, size);
+        Quaternion orientation = Quaternion.Euler(rotation);
+        Vector3 worldSize = Abs(orientation * (Vector3.right * size.x))
+            + Abs(orientation * (Vector3.up * size.y))
+            + Abs(orientation * (Vector3.forward * size.z));
+        return new Bounds(center, worldSize);
     }
+
+    private static Vector3 Abs(Vector3 value) => new Vector3(Mathf.Abs(value.x), Mathf.Abs(value.y), Mathf.Abs(value.z));
 }
 
 public enum OperationColorSource
@@ -119,18 +137,46 @@ public sealed class CustomShapeNode : CSGNode
     [SerializeReference] public List<CSGNode> members = new List<CSGNode>();
     private readonly List<CSGNode> m_outputs = new List<CSGNode>();
 
+    internal Vector3? rotationPivot;
+    public Vector3 Rotation { get; internal set; }
+    public Vector3 Position => rotationPivot ?? GetBounds().center;
     public override bool IsComplete => m_outputs.Count > 0;
 
-    public void MoveTo(Vector3 position) => Translate(position - GetBounds().center);
+    public void MoveTo(Vector3 position) => Translate(position - Position);
 
     private void Translate(Vector3 delta)
     {
+        rotationPivot += delta;
         foreach (var member in members)
         {
             if (member is PrimitiveNode primitive)
                 primitive.center += delta;
             else if (member is CustomShapeNode shape)
                 shape.Translate(delta);
+        }
+    }
+
+    public void RotateTo(Vector3 angles)
+    {
+        Quaternion delta = Quaternion.Euler(angles) * Quaternion.Inverse(Quaternion.Euler(Rotation));
+        RotateBy(delta, Position);
+        Rotation = angles;
+    }
+
+    private void RotateBy(Quaternion delta, Vector3 pivot)
+    {
+        // Keep a fixed pivot even when rotation changes the center of the axis-aligned bounds.
+        rotationPivot = pivot + delta * (Position - pivot);
+        Rotation = (delta * Quaternion.Euler(Rotation)).eulerAngles;
+        foreach (var member in members)
+        {
+            if (member is PrimitiveNode primitive)
+            {
+                primitive.center = pivot + delta * (primitive.center - pivot);
+                primitive.rotation = (delta * Quaternion.Euler(primitive.rotation)).eulerAngles;
+            }
+            else if (member is CustomShapeNode shape)
+                shape.RotateBy(delta, pivot);
         }
     }
 

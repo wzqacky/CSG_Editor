@@ -57,6 +57,8 @@ public static class CSGState
         public Vector2 position;
         public bool hasPosition;
         public Vector3 center;
+        public Vector3 rotation;
+        public bool hasRotationPivot;
         public Vector3 size;
         public float radius;
         public Color color;
@@ -88,6 +90,7 @@ public static class CSGState
             if (entity.node is PrimitiveNode primitive)
             {
                 data.center = primitive.center;
+                data.rotation = primitive.rotation;
                 data.color = primitive.color;
                 if (primitive is SphereNode sphere) data.radius = sphere.radius;
                 else if (primitive is BoxNode box) data.size = box.size;
@@ -102,6 +105,9 @@ public static class CSGState
             else if (entity.node is CustomShapeNode shape)
             {
                 data.shapeName = shape.name;
+                data.rotation = shape.Rotation;
+                data.hasRotationPivot = shape.rotationPivot.HasValue;
+                data.center = shape.rotationPivot.GetValueOrDefault();
                 data.members = new List<int>();
                 foreach (var member in shape.members)
                     data.members.Add(ids[member]);
@@ -130,7 +136,7 @@ public static class CSGState
         foreach (var data in document.nodes)
         {
             if (data == null || data.id <= 0 || data.id == int.MaxValue || nodes.ContainsKey(data.id) ||
-                !Finite(data.position.x) || !Finite(data.position.y) || !Finite(data.color))
+                !Finite(data.position.x) || !Finite(data.position.y) || !Finite(data.color) || !Finite(data.rotation))
                 throw new FormatException("Invalid node data or duplicate node ID.");
             CSGNode node;
             switch (data.type)
@@ -138,21 +144,27 @@ public static class CSGState
                 case "SphereNode":
                     if (!Finite(data.center) || !Finite(data.radius) || data.radius <= 0)
                         throw new FormatException("Invalid sphere dimensions or position.");
-                    node = new SphereNode { center = data.center, color = data.color, radius = data.radius };
+                    node = new SphereNode { center = data.center, rotation = data.rotation, color = data.color, radius = data.radius };
                     break;
                 case "BoxNode":
                     if (!Finite(data.center) || !Finite(data.size) ||
                         data.size.x <= 0 || data.size.y <= 0 || data.size.z <= 0)
                         throw new FormatException("Invalid box dimensions or position.");
-                    node = new BoxNode { center = data.center, color = data.color, size = data.size };
+                    node = new BoxNode { center = data.center, rotation = data.rotation, color = data.color, size = data.size };
                     break;
                 case "UnionNode": node = new UnionNode(); break;
                 case "IntersectNode": node = new IntersectNode(); break;
                 case "DiffNode": node = new DiffNode(); break;
                 case "CustomShapeNode":
-                    if (string.IsNullOrWhiteSpace(data.shapeName) || data.members == null)
+                    if (string.IsNullOrWhiteSpace(data.shapeName) || data.members == null ||
+                        (data.hasRotationPivot && !Finite(data.center)))
                         throw new FormatException("Invalid custom shape instance.");
-                    node = new CustomShapeNode { name = data.shapeName };
+                    node = new CustomShapeNode
+                    {
+                        name = data.shapeName,
+                        Rotation = data.rotation,
+                        rotationPivot = data.hasRotationPivot ? data.center : (Vector3?)null
+                    };
                     break;
                 default: throw new FormatException("Unknown CSG node type: " + data.type);
             }
@@ -351,11 +363,11 @@ public static class CSGCustomShapes
     private static CSGNode CopyNode(CSGNode node)
     {
         if (node is SphereNode sphere)
-            return new SphereNode { center = sphere.center, color = sphere.color, radius = sphere.radius };
+            return new SphereNode { center = sphere.center, rotation = sphere.rotation, color = sphere.color, radius = sphere.radius };
         if (node is BoxNode box)
-            return new BoxNode { center = box.center, color = box.color, size = box.size };
+            return new BoxNode { center = box.center, rotation = box.rotation, color = box.color, size = box.size };
         if (node is CustomShapeNode shape)
-            return new CustomShapeNode { name = shape.name };
+            return new CustomShapeNode { name = shape.name, Rotation = shape.Rotation, rotationPivot = shape.rotationPivot };
         OperationNode result;
         if (node is UnionNode) result = new UnionNode();
         else if (node is IntersectNode) result = new IntersectNode();
