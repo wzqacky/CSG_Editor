@@ -6,6 +6,15 @@ public sealed class PixelArtCameraComparisonWindow : EditorWindow
     private const float ViewSize = 7f;
     private const float PanDistance = 2.5f;
     private const double PanDuration = 8.0;
+    private const int ChecksPerSide = 4;
+
+    private enum ReplayMode
+    {
+        Normal,
+        ScreenSpace,
+        TexelSplat,
+        Orthographic
+    }
 
     private SceneView sceneView;
     private Vector3 previousPivot;
@@ -17,8 +26,7 @@ public sealed class PixelArtCameraComparisonWindow : EditorWindow
     private bool previousTexelSplatEnabled;
     private bool hasPreviousView;
     private bool isPlaying;
-    private bool playOrthographic;
-    private bool playTexelSplat;
+    private ReplayMode replayMode;
     private double startTime;
 
     private GameObject demoRoot;
@@ -35,21 +43,24 @@ public sealed class PixelArtCameraComparisonWindow : EditorWindow
     {
         EditorGUILayout.LabelField("Pixel-art camera comparison", EditorStyles.boldLabel);
         EditorGUILayout.HelpBox(
-            "Both runs use the same Scene view angle, framing, and straight pan. " +
+            "The perspective replays use the same Scene view framing and straight pan. " +
             "The texel-splat run captures one fixed probe at the starting position.",
             MessageType.Info);
 
         if (GUILayout.Button("Create temporary near/far targets"))
             CreateTargets();
 
-        if (GUILayout.Button("Replay orthographic (snap on)"))
-            StartPan(true, false);
+        if (GUILayout.Button("Replay perspective (normal render)"))
+            StartPan(ReplayMode.Normal);
 
         if (GUILayout.Button("Replay perspective (screen-space)"))
-            StartPan(false, false);
+            StartPan(ReplayMode.ScreenSpace);
 
         if (GUILayout.Button("Replay perspective (texel splat)"))
-            StartPan(false, true);
+            StartPan(ReplayMode.TexelSplat);
+
+        if (GUILayout.Button("Replay orthographic (snap on)"))
+            StartPan(ReplayMode.Orthographic);
 
         using (new EditorGUI.DisabledScope(!isPlaying))
         {
@@ -60,12 +71,17 @@ public sealed class PixelArtCameraComparisonWindow : EditorWindow
         if (GUILayout.Button("Restore previous Scene view"))
             RestoreView();
 
-        string modeName = playOrthographic ? "orthographic" :
-            playTexelSplat ? "perspective texel splat" : "perspective screen-space";
+        string modeName = replayMode switch
+        {
+            ReplayMode.ScreenSpace => "screen-space pixel art",
+            ReplayMode.TexelSplat => "texel splat",
+            ReplayMode.Orthographic => "orthographic pixel art",
+            _ => "normal render"
+        };
         EditorGUILayout.LabelField(isPlaying ? $"Playing {modeName} pan" : "Ready");
     }
 
-    private void StartPan(bool orthographic, bool texelSplat)
+    private void StartPan(ReplayMode mode)
     {
         if (sceneView == null)
             sceneView = SceneView.lastActiveSceneView;
@@ -90,19 +106,24 @@ public sealed class PixelArtCameraComparisonWindow : EditorWindow
 
         StopPan();
         sceneView.in2DMode = false;
-        playOrthographic = orthographic;
-        playTexelSplat = texelSplat;
+        replayMode = mode;
         ApplyPan(0f);
 
-        if (texelSplat)
+        switch (mode)
         {
-            if (!TexelSplatPrototypeController.SetEnabled(true))
-                return;
-            TexelSplatPrototypeController.Recapture();
-        }
-        else if (!PixelArtRenderController.SetEnabled(true))
-        {
-            return;
+            case ReplayMode.Normal:
+                TexelSplatPrototypeController.SetEnabled(false);
+                PixelArtRenderController.SetEnabled(false);
+                break;
+            case ReplayMode.TexelSplat:
+                if (!TexelSplatPrototypeController.SetEnabled(true))
+                    return;
+                TexelSplatPrototypeController.Recapture();
+                break;
+            default:
+                if (!PixelArtRenderController.SetEnabled(true))
+                    return;
+                break;
         }
 
         isPlaying = true;
@@ -131,7 +152,7 @@ public sealed class PixelArtCameraComparisonWindow : EditorWindow
     {
         float x = Mathf.Lerp(-PanDistance * 0.5f, PanDistance * 0.5f, progress);
         sceneView.LookAt(new Vector3(x, 0f, 0f), Quaternion.identity,
-            ViewSize, playOrthographic, true);
+            ViewSize, replayMode == ReplayMode.Orthographic, true);
         sceneView.Repaint();
     }
 
@@ -169,23 +190,24 @@ public sealed class PixelArtCameraComparisonWindow : EditorWindow
             return;
         }
 
-        demoTexture = new Texture2D(16, 16, TextureFormat.RGBA32, false)
+        demoTexture = new Texture2D(ChecksPerSide, ChecksPerSide, TextureFormat.RGBA32, false)
         {
             filterMode = FilterMode.Point,
             wrapMode = TextureWrapMode.Clamp,
             hideFlags = HideFlags.DontSave
         };
 
-        for (int y = 0; y < 16; y++)
+        for (int y = 0; y < ChecksPerSide; y++)
         {
-            for (int x = 0; x < 16; x++)
-                demoTexture.SetPixel(x, y, ((x / 2 + y / 2) & 1) == 0
+            for (int x = 0; x < ChecksPerSide; x++)
+                demoTexture.SetPixel(x, y, ((x + y) & 1) == 0
                     ? Color.white : Color.black);
         }
         demoTexture.Apply();
 
         demoMaterial = new Material(shader) { hideFlags = HideFlags.DontSave };
         demoMaterial.SetTexture("_BaseMap", demoTexture);
+        demoMaterial.SetFloat("_Cull", (float)UnityEngine.Rendering.CullMode.Off);
 
         demoRoot = new GameObject("Temporary Pixel Art Comparison Targets")
         {
@@ -193,16 +215,17 @@ public sealed class PixelArtCameraComparisonWindow : EditorWindow
         };
         CreateTarget("NEAR", new Vector3(-1.8f, 0f, -2.5f));
         CreateTarget("FAR", new Vector3(1.8f, 0f, 2.5f));
+        TexelSplatPrototypeController.InvalidateCapture();
         SceneView.RepaintAll();
     }
 
     private void CreateTarget(string label, Vector3 position)
     {
-        GameObject target = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        GameObject target = GameObject.CreatePrimitive(PrimitiveType.Quad);
         target.name = label;
         target.transform.SetParent(demoRoot.transform, false);
         target.transform.position = position;
-        target.transform.localScale = new Vector3(2.2f, 2.2f, 0.05f);
+        target.transform.localScale = new Vector3(2.2f, 2.2f, 1f);
         target.GetComponent<MeshRenderer>().sharedMaterial = demoMaterial;
         DestroyImmediate(target.GetComponent<Collider>());
         target.hideFlags = HideFlags.DontSave;
