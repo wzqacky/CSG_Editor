@@ -26,6 +26,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         public GameObject gameObject;
         public Mesh mesh;
         public Material material;
+        public string error;
     }
 
     private sealed class NodeView
@@ -595,7 +596,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         SelectNode(instance.node);
         CloseAddMenu();
         m_canvas.Focus();
-        RefreshAllPreviews();
+        RefreshGraphPreviews(_ => false);
         RecordHistory();
         if (!m_previewError) m_status.text = "Added " + shape.name + ".";
     }
@@ -691,7 +692,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         UpdateSelection();
         CloseAddMenu();
         m_canvas.Focus();
-        RefreshAllPreviews();
+        RefreshGraphPreviews(_ => false);
         RecordHistory();
         if (!m_previewError)
             m_status.text = m_selected.Count == 1 ? "Pasted 1 card." : "Pasted " + m_selected.Count + " cards.";
@@ -1028,7 +1029,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_emptyGraph.style.display = DisplayStyle.None;
         AddNodeView(entity);
         SelectNode(node);
-        RefreshAllPreviews();
+        RefreshGraphPreviews(_ => false);
         RecordHistory();
     }
 
@@ -1113,7 +1114,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         view.visibilityToggle.RegisterValueChangedCallback(evt =>
         {
             entity.hidden = !evt.newValue;
-            RefreshPreviewMeshes(false);
+            RefreshPreviewMeshes(_ => false);
             RecordHistory();
         });
         card.Add(view.visibilityToggle);
@@ -1366,11 +1367,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
                     m_status.text = "Cannot connect: this would create a cycle.";
                 else
                 {
-                    operation.SetInput(left, m_connectionSource);
                     m_status.text = "Connected. Drag another output to replace an input.";
-                    RefreshAllPreviews();
-                    UpdateOperationView(view, operation);
-                    RecordHistory();
+                    ChangeOperationInput(operation, left, m_connectionSource);
                 }
                 break;
             }
@@ -1535,25 +1533,28 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void AddPrimitiveFields(VisualElement form, PrimitiveNode primitive)
     {
-        AddVectorFields(form, "Position", primitive.center, false, value => primitive.center = value);
-        AddVectorFields(form, "Rotation (°)", primitive.rotation, false, value => primitive.rotation = value)
+        AddVectorFields(form, primitive, "Position", primitive.center, false, value => primitive.center = value);
+        AddVectorFields(form, primitive, "Rotation (°)", primitive.rotation, false, value => primitive.rotation = value)
             .name = "rotation-fields";
         if (primitive is SphereNode sphere)
         {
             form.Add(StyledLabel("Radius", "field-label"));
-            var radius = new FloatField { value = sphere.radius, isDelayed = true };
+            var radius = new FloatField { name = "radius-field", value = sphere.radius, isDelayed = true };
             radius.AddToClassList("form-field");
             radius.RegisterValueChangedCallback(evt =>
             {
-                sphere.radius = Mathf.Max(0.01f, evt.newValue);
-                radius.SetValueWithoutNotify(sphere.radius);
-                RefreshAllPreviews();
+                float next = Mathf.Max(0.01f, evt.newValue);
+                radius.SetValueWithoutNotify(next);
+                if (next == sphere.radius)
+                    return;
+                sphere.radius = next;
+                RefreshEditedPreviews(sphere);
                 RecordHistory();
             });
             form.Add(radius);
         }
         else if (primitive is BoxNode box)
-            AddVectorFields(form, "Size", box.size, true, value => box.size = value);
+            AddVectorFields(form, box, "Size", box.size, true, value => box.size = value);
         form.Add(StyledLabel("Color", "field-label"));
         AddColorPicker(form, primitive.color, color =>
         {
@@ -1564,9 +1565,9 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void AddCustomShapeFields(VisualElement form, CustomShapeNode shape)
     {
-        AddVectorFields(form, "Position", shape.Position, false, shape.MoveTo);
-        AddVectorFields(form, "Rotation (°)", shape.Rotation, false, shape.RotateTo).name = "rotation-fields";
-        AddVectorFields(form, "Size (×)", shape.Scale, true, shape.ScaleTo).name = "size-fields";
+        AddVectorFields(form, shape, "Position", shape.Position, false, shape.MoveTo);
+        AddVectorFields(form, shape, "Rotation (°)", shape.Rotation, false, shape.RotateTo).name = "rotation-fields";
+        AddVectorFields(form, shape, "Size (×)", shape.Scale, true, shape.ScaleTo).name = "size-fields";
         form.Add(StyledLabel("Color", "field-label"));
         AddColorPicker(form, shape.GetColor(), color =>
         {
@@ -1578,7 +1579,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void AddOperationFields(VisualElement form, OperationNode operation, NodeView view)
     {
-        var position = AddVectorFields(form, "Position", operation.Position, false, operation.MoveTo, out var setPosition);
+        var position = AddVectorFields(form, operation, "Position", operation.Position, false, operation.MoveTo, out var setPosition);
         position.name = "position-fields";
         view.refreshPosition = () =>
         {
@@ -1587,8 +1588,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         };
         view.refreshPosition();
 
-        AddVectorFields(form, "Size (×)", operation.scale, true, value => operation.scale = value).name = "size-fields";
-        AddVectorFields(form, "Rotation (°)", operation.rotation, false, value => operation.rotation = value)
+        AddVectorFields(form, operation, "Size (×)", operation.scale, true, value => operation.scale = value).name = "size-fields";
+        AddVectorFields(form, operation, "Rotation (°)", operation.rotation, false, value => operation.rotation = value)
             .name = "rotation-fields";
 
         form.Add(StyledLabel("Color source", "field-label"));
@@ -1751,13 +1752,14 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         mesh.SetNextIndex(0);
     }
 
-    private VisualElement AddVectorFields(VisualElement form, string label, Vector3 value, bool positive, Action<Vector3> apply)
+    private VisualElement AddVectorFields(VisualElement form, CSGNode node, string label, Vector3 value, bool positive,
+        Action<Vector3> apply)
     {
-        return AddVectorFields(form, label, value, positive, apply, out _);
+        return AddVectorFields(form, node, label, value, positive, apply, out _);
     }
 
-    private VisualElement AddVectorFields(VisualElement form, string label, Vector3 value, bool positive, Action<Vector3> apply,
-        out Action<Vector3> setValue)
+    private VisualElement AddVectorFields(VisualElement form, CSGNode node, string label, Vector3 value, bool positive,
+        Action<Vector3> apply, out Action<Vector3> setValue)
     {
         form.Add(StyledLabel(label, "field-label"));
         var row = new VisualElement();
@@ -1789,9 +1791,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             }
             if (positive)
                 next = Vector3.Max(Vector3.one * 0.01f, next);
+            bool changed = !next.Equals(value);
             SetFields(next);
+            if (!changed)
+                return;
             apply(next);
-            RefreshAllPreviews();
+            RefreshEditedPreviews(node);
             RecordHistory();
         }
         x.RegisterValueChangedCallback(_ => UpdateFields());
@@ -1810,14 +1815,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         var description = new Label();
         description.AddToClassList("input-description");
         row.Add(description);
-        var disconnect = new Button(() =>
-        {
-            operation.SetInput(left, null);
-            RefreshAllPreviews();
-            UpdateOperationView(view, operation);
-            m_lines.MarkDirtyRepaint();
-            RecordHistory();
-        }) { text = "x", tooltip = "Disconnect input" };
+        var disconnect = new Button(() => ChangeOperationInput(operation, left, null))
+            { text = "x", tooltip = "Disconnect input" };
         disconnect.AddToClassList("node-disconnect");
         row.Add(disconnect);
         view.element.Add(row);
@@ -1831,6 +1830,16 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             view.rightLabel = description;
             view.rightDisconnect = disconnect;
         }
+    }
+
+    private void ChangeOperationInput(OperationNode operation, bool left, CSGNode input)
+    {
+        operation.SetInput(left, input);
+        m_storage.RefreshCustomShapeOutputs();
+        RefreshEditedPreviews(operation);
+        UpdateOperationView(m_nodes[operation], operation);
+        m_lines.MarkDirtyRepaint();
+        RecordHistory();
     }
 
     private void UpdateOperationView(NodeView view, OperationNode operation)
@@ -1907,16 +1916,53 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void RefreshAllPreviews()
     {
+        RefreshGraphPreviews(_ => true);
+    }
+
+    private void RefreshGraphPreviews(Func<CSGNode, bool> needsUpdate)
+    {
         m_storage.RefreshCustomShapeOutputs();
         foreach (var view in m_nodes.Values)
             view.refreshPosition?.Invoke();
-        RefreshPreviewMeshes(true);
+        RefreshPreviewMeshes(needsUpdate);
     }
 
-    private void RefreshPreviewMeshes(bool updateExisting)
+    private void RefreshEditedPreviews(CSGNode edited)
+    {
+        var changed = new HashSet<CSGNode> { edited };
+        IncludeShapeMembers(edited, changed);
+        var affected = new Dictionary<CSGNode, bool>();
+
+        bool NeedsUpdate(CSGNode node)
+        {
+            if (node == null)
+                return false;
+            if (changed.Contains(node))
+                return true;
+            if (affected.TryGetValue(node, out bool result))
+                return result;
+
+            result = node switch
+            // Traverse down to find if child has been updated, if yes, mark as affected
+            {
+                OperationNode operation => NeedsUpdate(operation.leftChild) || NeedsUpdate(operation.rightChild),
+                CustomShapeNode shape => shape.members.Exists(NeedsUpdate),
+                _ => false
+            };
+            affected.Add(node, result);
+            return result;
+        }
+
+        foreach (var view in m_nodes.Values)
+            if (view.refreshPosition != null && NeedsUpdate(view.entity.node))
+                view.refreshPosition();
+        RefreshPreviewMeshes(NeedsUpdate);
+    }
+
+    private void RefreshPreviewMeshes(Func<CSGNode, bool> needsUpdate)
     {
         bool hadPreviewError = m_previewError;
-        m_previewError = false;
+        string error = null;
         var consumed = new HashSet<CSGNode>();
         foreach (var entity in m_storage.Entities)
             if (entity.node is OperationNode operation && operation.IsComplete)
@@ -1937,12 +1983,16 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             bool needsPreview = !m_previews.ContainsKey(entity.node);
             if (needsPreview)
                 CreatePreview(entity.node, entity.id);
-            if (needsPreview || updateExisting || hadPreviewError)
+            if (needsPreview || needsUpdate(entity.node))
                 UpdatePreview(entity.node);
+            error = m_previews[entity.node].error ?? error;
         }
         if (m_texelSplatProbe != null)
             m_texelSplatCaptureRequested = true;
-        if (hadPreviewError && !m_previewError)
+        m_previewError = error != null;
+        if (m_previewError)
+            m_status.text = error;
+        else if (hadPreviewError)
             m_status.text = "Preview updated.";
     }
 
@@ -1988,8 +2038,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         catch (InvalidOperationException exception)
         {
             preview.mesh.Clear();
-            m_previewError = true;
-            m_status.text = exception.Message;
+            preview.error = exception.Message;
             Debug.LogError(exception.Message, this);
             return;
         }
@@ -2010,6 +2059,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         preview.mesh.RecalculateNormals();
         preview.mesh.RecalculateBounds();
         preview.material.color = node.GetColor();
+        preview.error = null;
     }
 
     private void RemovePreview(CSGNode node)
