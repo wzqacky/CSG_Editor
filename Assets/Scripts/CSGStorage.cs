@@ -63,6 +63,14 @@ public sealed class CSGStorage
 
     public bool RemoveCustomShape(CustomShape shape) => m_customShapes.Remove(shape);
 
+    internal void RefreshCustomShapeOutputs()
+    {
+        var updated = new HashSet<CustomShapeNode>();
+        foreach (var entity in m_entities)
+            if (entity.node is CustomShapeNode shape)
+                shape.RefreshOutputs(updated);
+    }
+
     public Entity AddWithId(int id, CSGNode node)
     {
         if (node == null)

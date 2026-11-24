@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 [Serializable]
 public abstract class CSGNode
 {
+    public virtual bool IsComplete => true;
     public abstract float SignedDistance(Vector3 point);
     public abstract Color GetColor();
     // Returns an axis-aligned box containing the shape
@@ -75,6 +77,7 @@ public abstract class OperationNode : CSGNode
     [SerializeReference] public CSGNode rightChild;
     public OperationColorSource colorSource = OperationColorSource.InputA;
     public Color customColor = Color.gray;
+    public override bool IsComplete => leftChild?.IsComplete == true && rightChild?.IsComplete == true;
 
     public override Color GetColor()
     {
@@ -105,6 +108,83 @@ public abstract class OperationNode : CSGNode
         Validate();
         Bounds bounds = leftChild.GetBounds();
         bounds.Encapsulate(rightChild.GetBounds());
+        return bounds;
+    }
+}
+
+[Serializable]
+public sealed class CustomShapeNode : CSGNode
+{
+    public string name;
+    [SerializeReference] public List<CSGNode> members = new List<CSGNode>();
+    private readonly List<CSGNode> m_outputs = new List<CSGNode>();
+
+    public override bool IsComplete => m_outputs.Count > 0;
+
+    public void MoveTo(Vector3 position) => Translate(position - GetBounds().center);
+
+    private void Translate(Vector3 delta)
+    {
+        foreach (var member in members)
+        {
+            if (member is PrimitiveNode primitive)
+                primitive.center += delta;
+            else if (member is CustomShapeNode shape)
+                shape.Translate(delta);
+        }
+    }
+
+    public void SetColor(Color color)
+    {
+        foreach (var member in members)
+        {
+            if (member is PrimitiveNode primitive)
+                primitive.color = color;
+            else if (member is OperationNode operation && operation.colorSource == OperationColorSource.Custom)
+                operation.customColor = color;
+            else if (member is CustomShapeNode shape)
+                shape.SetColor(color);
+        }
+    }
+
+    internal void RefreshOutputs(HashSet<CustomShapeNode> updated)
+    {
+        if (!updated.Add(this))
+            return;
+        foreach (var member in members)
+            if (member is CustomShapeNode shape)
+                shape.RefreshOutputs(updated);
+
+        var consumed = new HashSet<CSGNode>();
+        foreach (var member in members)
+            if (member is OperationNode operation && operation.IsComplete)
+            {
+                consumed.Add(operation.leftChild);
+                consumed.Add(operation.rightChild);
+            }
+        m_outputs.Clear();
+        foreach (var member in members)
+            if (member.IsComplete && !consumed.Contains(member))
+                m_outputs.Add(member);
+    }
+
+    public override float SignedDistance(Vector3 point)
+    {
+        float distance = float.PositiveInfinity;
+        foreach (var output in m_outputs)
+            distance = Mathf.Min(distance, output.SignedDistance(point));
+        return distance;
+    }
+
+    public override Color GetColor() => IsComplete ? m_outputs[0].GetColor() : Color.gray;
+
+    public override Bounds GetBounds()
+    {
+        if (!IsComplete)
+            return new Bounds();
+        Bounds bounds = m_outputs[0].GetBounds();
+        for (int i = 1; i < m_outputs.Count; i++)
+            bounds.Encapsulate(m_outputs[i].GetBounds());
         return bounds;
     }
 }

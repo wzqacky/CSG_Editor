@@ -63,6 +63,8 @@ public static class CSGState
         public int left;
         public int right;
         public OperationColorSource colorSource;
+        public string shapeName;
+        public List<int> members;
     }
 
     public static string Serialize(CSGStorage storage)
@@ -96,6 +98,13 @@ public static class CSGState
                 data.right = operation.rightChild == null ? 0 : ids[operation.rightChild];
                 data.colorSource = operation.colorSource;
                 data.color = operation.customColor;
+            }
+            else if (entity.node is CustomShapeNode shape)
+            {
+                data.shapeName = shape.name;
+                data.members = new List<int>();
+                foreach (var member in shape.members)
+                    data.members.Add(ids[member]);
             }
             else
                 throw new InvalidOperationException("Unsupported CSG node type.");
@@ -140,6 +149,11 @@ public static class CSGState
                 case "UnionNode": node = new UnionNode(); break;
                 case "IntersectNode": node = new IntersectNode(); break;
                 case "DiffNode": node = new DiffNode(); break;
+                case "CustomShapeNode":
+                    if (string.IsNullOrWhiteSpace(data.shapeName) || data.members == null)
+                        throw new FormatException("Invalid custom shape instance.");
+                    node = new CustomShapeNode { name = data.shapeName };
+                    break;
                 default: throw new FormatException("Unknown CSG node type: " + data.type);
             }
             if (node is OperationNode operation)
@@ -157,17 +171,39 @@ public static class CSGState
         if (document.nextId < storage.NextId)
             throw new FormatException("Invalid next node ID.");
         storage.SetNextId(document.nextId);
+        var owners = new Dictionary<CSGNode, CustomShapeNode>();
         foreach (var data in document.nodes)
         {
-            if (!(nodes[data.id] is OperationNode operation))
-                continue;
-            operation.leftChild = Resolve(nodes, data.left);
-            operation.rightChild = Resolve(nodes, data.right);
+            if (nodes[data.id] is OperationNode operation)
+            {
+                operation.leftChild = Resolve(nodes, data.left);
+                operation.rightChild = Resolve(nodes, data.right);
+            }
+            else if (nodes[data.id] is CustomShapeNode shape)
+            {
+                foreach (int id in data.members)
+                {
+                    var member = Resolve(nodes, id);
+                    if (member == null || owners.ContainsKey(member))
+                        throw new FormatException("Each custom shape member must belong to one shape.");
+                    owners.Add(member, shape);
+                    shape.members.Add(member);
+                }
+            }
         }
         var visiting = new HashSet<CSGNode>();
         var visited = new HashSet<CSGNode>();
         foreach (var entity in storage.Entities)
+        {
+            if (entity.node is OperationNode operation)
+            {
+                owners.TryGetValue(operation, out var owner);
+                ValidateOwner(operation.leftChild, owner, owners);
+                ValidateOwner(operation.rightChild, owner, owners);
+            }
             ValidateAcyclic(entity.node, visiting, visited);
+        }
+        storage.RefreshCustomShapeOutputs();
         if (document.customShapes != null)
         {
             foreach (var shape in document.customShapes)
@@ -198,6 +234,15 @@ public static class CSGState
         return node;
     }
 
+    private static void ValidateOwner(CSGNode input, CustomShapeNode owner, Dictionary<CSGNode, CustomShapeNode> owners)
+    {
+        if (input == null)
+            return;
+        owners.TryGetValue(input, out var inputOwner);
+        if (inputOwner != owner)
+            throw new FormatException("A connection crosses a custom shape boundary.");
+    }
+
     private static void ValidateAcyclic(CSGNode node, HashSet<CSGNode> visiting, HashSet<CSGNode> visited)
     {
         if (node == null || visited.Contains(node)) return;
@@ -207,6 +252,9 @@ public static class CSGState
             ValidateAcyclic(operation.leftChild, visiting, visited);
             ValidateAcyclic(operation.rightChild, visiting, visited);
         }
+        else if (node is CustomShapeNode shape)
+            foreach (var member in shape.members)
+                ValidateAcyclic(member, visiting, visited);
         visiting.Remove(node);
         visited.Add(node);
     }
@@ -243,11 +291,16 @@ public static class CSGCustomShapes
         if (copies.Count != included.Count)
             throw new InvalidOperationException("The selected graph contains a missing node.");
         foreach (var pair in copies)
+        {
             if (pair.Key is OperationNode original && pair.Value is OperationNode copy)
             {
                 copy.leftChild = original.leftChild == null ? null : copies[original.leftChild];
                 copy.rightChild = original.rightChild == null ? null : copies[original.rightChild];
             }
+            else if (pair.Key is CustomShapeNode originalShape && pair.Value is CustomShapeNode copiedShape)
+                foreach (var member in originalShape.members)
+                    copiedShape.members.Add(copies[member]);
+        }
         return CSGState.Serialize(snapshot);
     }
 
@@ -265,6 +318,23 @@ public static class CSGCustomShapes
         return added;
     }
 
+    public static CSGStorage.Entity AddInstance(CSGStorage storage, CSGStorage.CustomShape shape,
+        out List<CSGStorage.Entity> added)
+    {
+        added = AddCopy(storage, shape);
+        var nestedMembers = new HashSet<CSGNode>();
+        foreach (var entity in added)
+            if (entity.node is CustomShapeNode nested)
+                nestedMembers.UnionWith(nested.members);
+
+        var instance = new CustomShapeNode { name = shape.name };
+        foreach (var entity in added)
+            if (!nestedMembers.Contains(entity.node))
+                instance.members.Add(entity.node);
+        instance.RefreshOutputs(new HashSet<CustomShapeNode>());
+        return storage.Add(instance);
+    }
+
     private static void IncludeDependencies(CSGNode node, HashSet<CSGNode> included)
     {
         if (node == null || !included.Add(node)) return;
@@ -273,6 +343,9 @@ public static class CSGCustomShapes
             IncludeDependencies(operation.leftChild, included);
             IncludeDependencies(operation.rightChild, included);
         }
+        else if (node is CustomShapeNode shape)
+            foreach (var member in shape.members)
+                IncludeDependencies(member, included);
     }
 
     private static CSGNode CopyNode(CSGNode node)
@@ -281,6 +354,8 @@ public static class CSGCustomShapes
             return new SphereNode { center = sphere.center, color = sphere.color, radius = sphere.radius };
         if (node is BoxNode box)
             return new BoxNode { center = box.center, color = box.color, size = box.size };
+        if (node is CustomShapeNode shape)
+            return new CustomShapeNode { name = shape.name };
         OperationNode result;
         if (node is UnionNode) result = new UnionNode();
         else if (node is IntersectNode) result = new IntersectNode();

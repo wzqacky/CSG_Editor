@@ -14,6 +14,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private const float CanvasWidth = 1800f;
     private const float CanvasHeight = 1200f;
     private const float NodeWidth = 250f;
+    private const float CustomShapeCardHeight = 145f;
+    private const float ExpandedShapeToolbarHeight = 29f;
     private const float MinZoom = 0.4f;
     private const float MaxZoom = 2f;
     private const float BoxSelectionThreshold = 4f;
@@ -29,13 +31,21 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         public CSGStorage.Entity entity;
         public VisualElement element;
+        public VisualElement card;
         public VisualElement output;
+        public VisualElement expandedToolbar;
+        public VisualElement expandedOutput;
+        public Action rebuildForm;
         public VisualElement left;
         public VisualElement right;
         public Label leftLabel;
         public Label rightLabel;
         public Button leftDisconnect;
         public Button rightDisconnect;
+        public NodeView shapeOwner;
+        public bool expanded;
+        public bool IsVisible => element.style.display != DisplayStyle.None;
+        public bool IsCardVisible => IsVisible && card.style.display != DisplayStyle.None;
     }
 
     private CSGStorage m_storage = new CSGStorage();
@@ -94,6 +104,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private Vector2 m_boxSelectionStart;
     private NodeView m_draggedNode;
     private Vector2 m_dragOffset;
+    private Vector2 m_dragMinimum;
+    private Vector2 m_dragMaximum;
     private CSGNode m_connectionSource;
     private Vector2 m_connectionEnd;
     private int m_activePointer = -1;
@@ -561,7 +573,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void AddCustomShape(CSGStorage.CustomShape shape)
     {
-        var added = CSGCustomShapes.AddCopy(m_storage, shape);
+        var instance = CSGCustomShapes.AddInstance(m_storage, shape, out var added);
+        float maxX = CanvasWidth - NodeWidth - 8;
+        instance.graphPosition = new Vector2(Mathf.Clamp(m_addPosition.x, 8, maxX),
+            Mathf.Clamp(m_addPosition.y, 8, CanvasHeight - CustomShapeCardHeight - 8));
+        instance.hasGraphPosition = true;
+
         Vector2 min = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
         Vector2 max = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
         foreach (var entity in added)
@@ -569,28 +586,30 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             min = Vector2.Min(min, entity.graphPosition);
             max = Vector2.Max(max, entity.graphPosition);
         }
-        Vector2 offset = m_addPosition - min;
-        float maxX = CanvasWidth - NodeWidth - 8;
+        Vector2 origin = instance.graphPosition + Vector2.up * (ExpandedShapeToolbarHeight + 16);
         float maxY = CanvasHeight - 145 - 8;
+        float above = instance.graphPosition.y - (max.y - min.y) - 145 - 16;
+        if (origin.y + max.y - min.y > maxY && above >= 8)
+            origin.y = above;
+        Vector2 offset = origin - min;
         if (8 - min.x <= maxX - max.x)
             offset.x = Mathf.Clamp(offset.x, 8 - min.x, maxX - max.x);
         if (8 - min.y <= maxY - max.y)
             offset.y = Mathf.Clamp(offset.y, 8 - min.y, maxY - max.y);
-        ClearSelection();
         foreach (var entity in added)
         {
             Vector2 position = entity.graphPosition + offset;
             entity.graphPosition = new Vector2(Mathf.Clamp(position.x, 8, maxX), Mathf.Clamp(position.y, 8, maxY));
             entity.hasGraphPosition = true;
             AddNodeView(entity);
-            m_selected.Add(entity.node);
-            m_nodes[entity.node].element.AddToClassList("node-selected");
         }
+        AddNodeView(instance);
+        UpdateShapeOwners();
         foreach (var entity in added)
             if (entity.node is OperationNode operation)
                 UpdateOperationView(m_nodes[entity.node], operation);
         m_emptyGraph.style.display = DisplayStyle.None;
-        UpdateSelection();
+        SelectNode(instance.node);
         CloseAddMenu();
         m_canvas.Focus();
         RefreshAllPreviews();
@@ -662,6 +681,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             m_storage = storage;
             foreach (var entity in m_storage.Entities)
                 AddNodeView(entity);
+            UpdateShapeOwners();
             foreach (var entity in m_storage.Entities)
                 if (entity.node is OperationNode operation)
                     UpdateOperationView(m_nodes[entity.node], operation);
@@ -921,15 +941,21 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void AddNodeView(CSGStorage.Entity entity)
     {
-        var view = new NodeView { entity = entity, element = new VisualElement() };
-        var card = view.element;
-        card.style.position = Position.Absolute;
-        card.style.width = NodeWidth;
-        card.style.left = entity.graphPosition.x;
-        card.style.top = entity.graphPosition.y;
+        var element = new VisualElement();
+        element.style.position = Position.Absolute;
+        element.style.width = NodeWidth;
+        element.style.left = entity.graphPosition.x;
+        element.style.top = entity.graphPosition.y;
+        var card = element;
+        if (entity.node is CustomShapeNode)
+        {
+            card = new VisualElement { name = "custom-shape-card" };
+            element.Add(card);
+        }
+        var view = new NodeView { entity = entity, element = element, card = card };
         card.AddToClassList("node-card");
-        card.style.borderLeftColor = entity.node is PrimitiveNode
-            ? new Color(0.18f, 0.48f, 0.85f) : new Color(0.81f, 0.47f, 0.16f);
+        card.style.borderLeftColor = entity.node is OperationNode
+            ? new Color(0.81f, 0.47f, 0.16f) : new Color(0.18f, 0.48f, 0.85f);
         card.RegisterCallback<PointerDownEvent>(evt =>
         {
             if (evt.button != 0 || !evt.shiftKey || m_activePointer != -1)
@@ -948,6 +974,14 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         title.AddToClassList("node-title");
         header.Add(title);
         title.RegisterCallback<PointerDownEvent>(evt => StartNodeDrag(evt, view));
+        if (entity.node is CustomShapeNode)
+        {
+            card.style.minHeight = CustomShapeCardHeight;
+            title.AddToClassList("custom-shape-title");
+            var expand = new Button(() => SetShapeExpanded(view, true)) { text = "Expand", name = "custom-shape-toggle" };
+            expand.AddToClassList("custom-shape-toggle");
+            header.Add(expand);
+        }
         var delete = new Button(() => RemoveNodes(new HashSet<CSGNode> { entity.node }))
             { text = "x", tooltip = "Delete node" };
         delete.AddToClassList("node-delete");
@@ -960,17 +994,16 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             view.right = AddPort(card, null, true, 107);
             AddInputRow(view, operation, true, 70);
             AddInputRow(view, operation, false, 102);
-            var form = new VisualElement();
-            form.AddToClassList("operation-form");
-            card.Add(form);
-            AddOperationColorFields(form, operation);
+            AddNodeForm(view, "operation-form", form => AddOperationColorFields(form, operation));
         }
         else if (entity.node is PrimitiveNode primitive)
         {
-            var form = new VisualElement();
-            form.AddToClassList("node-form");
-            card.Add(form);
-            AddPrimitiveFields(form, primitive);
+            AddNodeForm(view, "node-form", form => AddPrimitiveFields(form, primitive));
+        }
+        else if (entity.node is CustomShapeNode shape)
+        {
+            AddNodeForm(view, "node-form", form => AddCustomShapeFields(form, shape));
+            AddExpandedShapeToolbar(view);
         }
 
         view.output = AddPort(card, "Output  ", false, 44);
@@ -981,20 +1014,89 @@ public sealed class CSGRuntimeUI : MonoBehaviour
                 SelectNode(entity.node);
         });
         m_nodes.Add(entity.node, view);
-        m_canvas.Add(card);
+        m_canvas.Add(element);
         if (entity.node is OperationNode addedOperation &&
             addedOperation.leftChild == null && addedOperation.rightChild == null)
             UpdateOperationView(view, addedOperation);
-        card.RegisterCallback<GeometryChangedEvent>(_ =>
+        element.RegisterCallback<GeometryChangedEvent>(_ =>
         {
-            float maxY = Mathf.Max(8, CanvasHeight - card.resolvedStyle.height - 8);
+            if (!view.IsVisible)
+                return;
+            float maxY = Mathf.Max(8, CanvasHeight - element.resolvedStyle.height - 8);
             if (entity.graphPosition.y > maxY)
             {
                 entity.graphPosition.y = maxY;
-                card.style.top = maxY;
+                element.style.top = maxY;
             }
             m_lines.MarkDirtyRepaint();
         });
+        m_lines.MarkDirtyRepaint();
+    }
+
+    private static void AddNodeForm(NodeView view, string className, Action<VisualElement> build)
+    {
+        var form = new VisualElement();
+        form.AddToClassList(className);
+        view.card.Add(form);
+        view.rebuildForm = () =>
+        {
+            form.Clear();
+            build(form);
+        };
+        view.rebuildForm();
+    }
+
+    private void AddExpandedShapeToolbar(NodeView view)
+    {
+        var toolbar = new VisualElement { name = "custom-shape-toolbar" };
+        toolbar.AddToClassList("custom-shape-toolbar");
+        toolbar.style.height = ExpandedShapeToolbarHeight;
+        toolbar.style.display = DisplayStyle.None;
+        var collapse = new Button(() => SetShapeExpanded(view, false)) { text = "Collapse", name = "custom-shape-collapse" };
+        collapse.AddToClassList("custom-shape-toggle");
+        toolbar.Add(collapse);
+        toolbar.Add(StyledLabel(NodeName(view.entity), "custom-shape-title"));
+        view.expandedOutput = AddPort(toolbar, null, false, 5);
+        view.expandedOutput.tooltip = "Custom shape output";
+        view.expandedOutput.RegisterCallback<PointerDownEvent>(evt => StartConnection(evt, view));
+        view.expandedToolbar = toolbar;
+        view.element.Add(toolbar);
+    }
+
+    private void SetShapeExpanded(NodeView view, bool expanded)
+    {
+        m_canvas.Focus();
+        view.expanded = expanded;
+        SelectNode(expanded ? null : view.entity.node);
+        UpdateNodeVisibility();
+    }
+
+    private void UpdateShapeOwners()
+    {
+        foreach (var view in m_nodes.Values)
+            if (view.entity.node is CustomShapeNode shape)
+                foreach (var member in shape.members)
+                    m_nodes[member].shapeOwner = view;
+        UpdateNodeVisibility();
+    }
+
+    private void UpdateNodeVisibility()
+    {
+        foreach (var view in m_nodes.Values)
+        {
+            bool visible = true;
+            for (var owner = view.shapeOwner; owner != null && visible; owner = owner.shapeOwner)
+                visible = owner.expanded;
+            bool showCard = visible && !view.expanded;
+            if (showCard && !view.IsCardVisible)
+                view.rebuildForm?.Invoke();
+            view.element.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+            if (view.expandedToolbar != null)
+            {
+                view.card.style.display = showCard ? DisplayStyle.Flex : DisplayStyle.None;
+                view.expandedToolbar.style.display = visible && view.expanded ? DisplayStyle.Flex : DisplayStyle.None;
+            }
+        }
         m_lines.MarkDirtyRepaint();
     }
 
@@ -1037,16 +1139,35 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_canvas.Focus();
         m_draggedNode = view;
         m_dragOffset = m_canvas.WorldToLocal(evt.position) - view.entity.graphPosition;
+        var minDelta = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
+        var maxDelta = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
+        GetMoveLimits(view, ref minDelta, ref maxDelta);
+        m_dragMinimum = view.entity.graphPosition + Vector2.Min(minDelta, Vector2.zero);
+        m_dragMaximum = view.entity.graphPosition + Vector2.Max(maxDelta, Vector2.zero);
         m_activePointer = evt.pointerId;
         m_canvas.CapturePointer(evt.pointerId);
         evt.StopPropagation();
+    }
+
+    private void GetMoveLimits(NodeView view, ref Vector2 minDelta, ref Vector2 maxDelta)
+    {
+        Vector2 position = view.entity.graphPosition;
+        float minHeight = view.entity.node is CustomShapeNode ? CustomShapeCardHeight : 145f;
+        float layoutHeight = view.element.resolvedStyle.height;
+        float height = float.IsNaN(layoutHeight) ? minHeight : Mathf.Max(minHeight, layoutHeight);
+        minDelta = Vector2.Max(minDelta, new Vector2(8, 8) - position);
+        maxDelta = Vector2.Min(maxDelta, new Vector2(CanvasWidth - NodeWidth - 8, CanvasHeight - height - 8) - position);
+        if (view.entity.node is CustomShapeNode shape)
+            foreach (var member in shape.members)
+                GetMoveLimits(m_nodes[member], ref minDelta, ref maxDelta);
     }
 
     private void StartConnection(PointerDownEvent evt, NodeView view)
     {
         if (evt.button != 0 || m_activePointer != -1)
             return;
-        SelectNode(view.entity.node);
+        if (!view.expanded)
+            SelectNode(view.entity.node);
         m_canvas.Focus();
         m_connectionSource = view.entity.node;
         m_connectionEnd = m_canvas.WorldToLocal(evt.position);
@@ -1072,18 +1193,27 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         }
         else if (m_draggedNode != null)
         {
-            Vector2 position = m_canvas.WorldToLocal(evt.position);
-            position -= m_dragOffset;
-            position.x = Mathf.Clamp(position.x, 8, CanvasWidth - NodeWidth - 8);
-            float height = m_draggedNode.element.resolvedStyle.height;
-            position.y = Mathf.Clamp(position.y, 8, CanvasHeight - Mathf.Max(145, height) - 8);
-            m_draggedNode.entity.graphPosition = position;
-            m_draggedNode.element.style.left = position.x;
-            m_draggedNode.element.style.top = position.y;
+            Vector2 position = m_canvas.WorldToLocal(evt.position) - m_dragOffset;
+            position = Vector2.Max(m_dragMinimum, Vector2.Min(position, m_dragMaximum));
+            MoveNode(m_draggedNode, position);
         }
         else if (m_connectionSource != null)
             m_connectionEnd = m_canvas.WorldToLocal(evt.position);
         m_lines.MarkDirtyRepaint();
+    }
+
+    private void MoveNode(NodeView view, Vector2 position)
+    {
+        Vector2 delta = position - view.entity.graphPosition;
+        view.entity.graphPosition = position;
+        view.element.style.left = position.x;
+        view.element.style.top = position.y;
+        if (view.entity.node is CustomShapeNode shape)
+            foreach (var member in shape.members)
+            {
+                var memberView = m_nodes[member];
+                MoveNode(memberView, memberView.entity.graphPosition + delta);
+            }
     }
 
     private void OnGraphPointerUp(PointerUpEvent evt)
@@ -1095,9 +1225,10 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         else if (m_connectionSource != null)
         {
             bool hit = false;
+            var sourceView = m_nodes[m_connectionSource];
             foreach (var view in m_nodes.Values)
             {
-                if (!(view.entity.node is OperationNode operation))
+                if (!view.IsVisible || !(view.entity.node is OperationNode operation))
                     continue;
                 bool withinViewport = m_graphViewport.worldBound.Contains(evt.position);
                 bool left = withinViewport && view.left.worldBound.Contains(evt.position);
@@ -1105,7 +1236,9 @@ public sealed class CSGRuntimeUI : MonoBehaviour
                 if (!left && !right)
                     continue;
                 hit = true;
-                if (DependsOn(m_connectionSource, operation, new HashSet<CSGNode>()))
+                if (sourceView.shapeOwner != view.shapeOwner)
+                    m_status.text = "Connect nodes within the same custom shape, or use the shape's output.";
+                else if (DependsOn(m_connectionSource, operation, new HashSet<CSGNode>()))
                     m_status.text = "Cannot connect: this would create a cycle.";
                 else
                 {
@@ -1141,7 +1274,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             m_boxSelecting = false;
             m_selectionBox.style.display = DisplayStyle.None;
             foreach (var entry in m_nodes)
-                entry.Value.element.EnableInClassList("node-selected", m_selected.Contains(entry.Key));
+                entry.Value.card.EnableInClassList("node-selected", m_selected.Contains(entry.Key));
         }
         if (m_draggedNode != null)
             RecordHistory();
@@ -1173,9 +1306,11 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
         foreach (var entry in m_nodes)
         {
+            if (!entry.Value.IsCardVisible)
+                continue;
             bool selected = (m_addToSelection && m_selected.Contains(entry.Key)) ||
                 (isDrag && bounds.Overlaps(entry.Value.element.worldBound));
-            entry.Value.element.EnableInClassList("node-selected", selected);
+            entry.Value.card.EnableInClassList("node-selected", selected);
             if (!commit)
                 continue;
             if (selected)
@@ -1194,7 +1329,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         painter.lineWidth = 2.5f;
         foreach (var view in m_nodes.Values)
         {
-            if (!(view.entity.node is OperationNode operation))
+            if (!view.IsVisible || !(view.entity.node is OperationNode operation))
                 continue;
             DrawConnection(painter, operation.leftChild, view, true);
             DrawConnection(painter, operation.rightChild, view, false);
@@ -1211,7 +1346,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private Vector2 PortPosition(NodeView view, bool input, bool left)
     {
-        VisualElement port = input ? (left ? view.left : view.right) : view.output;
+        VisualElement port = input ? (left ? view.left : view.right) : (view.expanded ? view.expandedOutput : view.output);
         return m_canvas.WorldToLocal(port.worldBound.center);
     }
 
@@ -1226,6 +1361,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private static string NodeName(CSGStorage.Entity entity)
     {
+        if (entity.node is CustomShapeNode shape)
+            return shape.name + " #" + entity.id;
         string name = entity.node is DiffNode ? "Difference" : entity.node.GetType().Name.Replace("Node", "");
         return name + " #" + entity.id;
     }
@@ -1234,7 +1371,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         foreach (var node in m_selected)
             if (m_nodes.TryGetValue(node, out var view))
-                view.element.RemoveFromClassList("node-selected");
+                view.card.RemoveFromClassList("node-selected");
         m_selected.Clear();
         UpdateSelection();
     }
@@ -1248,12 +1385,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             if (additive && m_selected.Contains(node))
             {
                 m_selected.Remove(node);
-                selected.element.RemoveFromClassList("node-selected");
+                selected.card.RemoveFromClassList("node-selected");
             }
             else
             {
                 m_selected.Add(node);
-                selected.element.AddToClassList("node-selected");
+                selected.card.AddToClassList("node-selected");
             }
         }
         UpdateSelection();
@@ -1299,6 +1436,18 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             primitive.color = color;
             RefreshPreviewColors();
         });
+    }
+
+    private void AddCustomShapeFields(VisualElement form, CustomShapeNode shape)
+    {
+        AddVectorFields(form, "Position", shape.GetBounds().center, false, shape.MoveTo);
+        form.Add(StyledLabel("Color", "field-label"));
+        AddColorPicker(form, shape.GetColor(), color =>
+        {
+            shape.SetColor(color);
+            RefreshPreviewColors();
+        });
+        form.SetEnabled(shape.IsComplete);
     }
 
     private void AddOperationColorFields(VisualElement form, OperationNode operation)
@@ -1543,11 +1692,16 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void RemoveNodes(HashSet<CSGNode> nodes)
     {
-        if (nodes.Count == 0)
+        int selectedCount = nodes.Count;
+        if (selectedCount == 0)
             return;
 
+        foreach (var node in new List<CSGNode>(nodes))
+            IncludeShapeMembers(node, nodes);
         foreach (var entity in m_storage.Entities)
         {
+            if (entity.node is CustomShapeNode shape && !nodes.Contains(shape))
+                shape.members.RemoveAll(nodes.Contains);
             if (entity.node is OperationNode operation && !nodes.Contains(operation))
             {
                 if (nodes.Contains(operation.leftChild)) operation.leftChild = null;
@@ -1568,8 +1722,16 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         RefreshAllPreviews();
         m_lines.MarkDirtyRepaint();
         if (!m_previewError)
-            m_status.text = nodes.Count == 1 ? "Node removed." : nodes.Count + " nodes removed.";
+            m_status.text = selectedCount == 1 ? "Node removed." : selectedCount + " nodes removed.";
         RecordHistory();
+    }
+
+    private static void IncludeShapeMembers(CSGNode node, HashSet<CSGNode> nodes)
+    {
+        if (node is CustomShapeNode shape)
+            foreach (var member in shape.members)
+                if (nodes.Add(member))
+                    IncludeShapeMembers(member, nodes);
     }
 
     private static bool DependsOn(CSGNode node, CSGNode target, HashSet<CSGNode> visited)
@@ -1581,31 +1743,30 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         return DependsOn(operation.leftChild, target, visited) || DependsOn(operation.rightChild, target, visited);
     }
 
-    private static bool IsComplete(CSGNode node, HashSet<CSGNode> visiting)
+    private static void ConsumeOutput(CSGNode node, HashSet<CSGNode> consumed)
     {
-        if (node == null || !visiting.Add(node))
-            return false;
-        bool complete = !(node is OperationNode operation) ||
-            (IsComplete(operation.leftChild, visiting) && IsComplete(operation.rightChild, visiting));
-        visiting.Remove(node);
-        return complete;
+        if (consumed.Add(node) && node is CustomShapeNode shape)
+            foreach (var member in shape.members)
+                ConsumeOutput(member, consumed);
     }
 
     private void RefreshAllPreviews()
     {
         bool hadPreviewError = m_previewError;
         m_previewError = false;
+        m_storage.RefreshCustomShapeOutputs();
         var consumed = new HashSet<CSGNode>();
         foreach (var entity in m_storage.Entities)
-            if (entity.node is OperationNode operation && IsComplete(operation, new HashSet<CSGNode>()))
+            if (entity.node is OperationNode operation && operation.IsComplete)
             {
-                consumed.Add(operation.leftChild);
-                consumed.Add(operation.rightChild);
+                ConsumeOutput(operation.leftChild, consumed);
+                ConsumeOutput(operation.rightChild, consumed);
             }
 
         foreach (var entity in m_storage.Entities)
         {
-            if (consumed.Contains(entity.node) || !IsComplete(entity.node, new HashSet<CSGNode>()))
+            // An unconnected custom shape keeps the previews of its individual outputs.
+            if (entity.node is CustomShapeNode || consumed.Contains(entity.node) || !entity.node.IsComplete)
             {
                 RemovePreview(entity.node);
                 continue;

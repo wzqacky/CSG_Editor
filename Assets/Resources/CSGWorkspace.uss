@@ -124,6 +124,13 @@
     white-space: normal;
 }
 
+.selection-box {
+    position: absolute;
+    border-width: 2px;
+    border-color: rgb(39, 88, 172);
+    background-color: rgba(67, 129, 220, 0.16);
+}
+
 .add-menu {
     position: absolute;
     width: 180px;
@@ -217,9 +224,10 @@
 }
 
 .node-selected {
-    border-top-color: rgb(49, 102, 190);
-    border-right-color: rgb(49, 102, 190);
-    border-bottom-color: rgb(49, 102, 190);
+    border-top-color: rgb(39, 88, 172);
+    border-right-color: rgb(39, 88, 172);
+    border-bottom-color: rgb(39, 88, 172);
+    background-color: rgb(224, 237, 255);
 }
 
 .node-header {
@@ -237,6 +245,26 @@
     -unity-font-style: bold;
 }
 
+.custom-shape-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.custom-shape-toggle {
+    margin: 0 2px;
+    padding: 1px 6px;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.custom-shape-toolbar {
+    flex-direction: row;
+    align-items: center;
+    padding-right: 12px;
+    background-color: rgb(237, 242, 248);
+}
+
 .node-delete, .node-disconnect {
     width: 22px;
     height: 22px;
@@ -250,6 +278,18 @@
 .node-delete:hover, .node-disconnect:hover {
     background-color: rgb(226, 238, 255);
     color: rgb(35, 48, 67);
+}
+
+.node-selected .node-header {
+    background-color: rgb(39, 88, 172);
+}
+
+.node-selected .node-title, .node-selected .node-delete {
+    color: white;
+}
+
+.node-selected .node-delete:hover {
+    background-color: rgb(29, 67, 135);
 }
 
 .node-caption {
