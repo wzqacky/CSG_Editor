@@ -11,6 +11,17 @@ public abstract class CSGNode
     // Returns an axis-aligned box containing the shape
     // as Marching cube requries a finite region to compute
     public abstract Bounds GetBounds();
+
+    protected static Bounds TransformBounds(Bounds bounds, Vector3 pivot, Matrix4x4 transform)
+    {
+        Vector3 size = bounds.size;
+        Vector3 worldSize = Abs(transform.MultiplyVector(Vector3.right * size.x))
+            + Abs(transform.MultiplyVector(Vector3.up * size.y))
+            + Abs(transform.MultiplyVector(Vector3.forward * size.z));
+        return new Bounds(pivot + transform.MultiplyVector(bounds.center - pivot), worldSize);
+    }
+
+    private static Vector3 Abs(Vector3 value) => new Vector3(Mathf.Abs(value.x), Mathf.Abs(value.y), Mathf.Abs(value.z));
 }
 
 [Serializable]
@@ -71,14 +82,8 @@ public sealed class BoxNode : PrimitiveNode {
 
     public override Bounds GetBounds()
     {
-        Quaternion orientation = Quaternion.Euler(rotation);
-        Vector3 worldSize = Abs(orientation * (Vector3.right * size.x))
-            + Abs(orientation * (Vector3.up * size.y))
-            + Abs(orientation * (Vector3.forward * size.z));
-        return new Bounds(center, worldSize);
+        return TransformBounds(new Bounds(center, size), center, Matrix4x4.Rotate(Quaternion.Euler(rotation)));
     }
-
-    private static Vector3 Abs(Vector3 value) => new Vector3(Mathf.Abs(value.x), Mathf.Abs(value.y), Mathf.Abs(value.z));
 }
 
 public enum OperationColorSource
@@ -93,9 +98,33 @@ public abstract class OperationNode : CSGNode
 {
     [SerializeReference] public CSGNode leftChild;
     [SerializeReference] public CSGNode rightChild;
+    public Vector3 scale = Vector3.one;
+    public Vector3 rotation;
     public OperationColorSource colorSource = OperationColorSource.InputA;
     public Color customColor = Color.gray;
+    internal Vector3 outputFrame;
+    internal Vector3? outputPivot;
+    internal Vector3? outputPosition;
+    [NonSerialized] private Vector3 m_cachedScale;
+    [NonSerialized] private Vector3 m_cachedRotation;
+    [NonSerialized] private Vector3 m_cachedFrame;
+    [NonSerialized] private Matrix4x4 m_outputTransform;
+    [NonSerialized] private Matrix4x4 m_inverseOutputTransform;
+
+    private bool HasTransform => outputPosition.HasValue || !scale.Equals(Vector3.one) || !rotation.Equals(Vector3.zero);
     public override bool IsComplete => leftChild?.IsComplete == true && rightChild?.IsComplete == true;
+    public Vector3 Position => outputPosition ?? (IsComplete ? (outputPivot ?? GetOperandBounds().center) : Vector3.zero);
+
+    public void MoveTo(Vector3 position) => outputPosition = position;
+
+    internal void SetInput(bool left, CSGNode node)
+    {
+        if ((left ? leftChild : rightChild) == node)
+            return;
+        if (left) leftChild = node;
+        else rightChild = node;
+        outputPivot = null;
+    }
 
     public override Color GetColor()
     {
@@ -121,12 +150,72 @@ public abstract class OperationNode : CSGNode
             throw new InvalidOperationException($"{GetType().Name} needs a left and right child.");
     }
 
-    public override Bounds GetBounds()
+    public sealed override float SignedDistance(Vector3 point)
     {
         Validate();
+        if (!HasTransform)
+            return Evaluate(point);
+
+        UpdateTransform();
+        Vector3 pivot = GetOutputPivot();
+        Vector3 sample = pivot + m_inverseOutputTransform.MultiplyVector(point - outputPosition.GetValueOrDefault(pivot));
+        // The smallest scale keeps the distance conservative for nonuniform scaling.
+        return Evaluate(sample) * Mathf.Min(scale.x, Mathf.Min(scale.y, scale.z));
+    }
+
+    public sealed override Bounds GetBounds()
+    {
+        Validate();
+        Bounds bounds = GetOperandBounds();
+        if (!HasTransform)
+            return bounds;
+
+        UpdateTransform();
+        outputPivot ??= bounds.center;
+        Bounds result = TransformBounds(bounds, outputPivot.Value, m_outputTransform);
+        if (outputPosition.HasValue)
+            result.center += outputPosition.Value - outputPivot.Value;
+        return result;
+    }
+
+    protected abstract float Evaluate(Vector3 point);
+
+    protected virtual Bounds GetOperandBounds()
+    {
         Bounds bounds = leftChild.GetBounds();
         bounds.Encapsulate(rightChild.GetBounds());
         return bounds;
+    }
+
+    private Vector3 GetOutputPivot() => outputPivot ??= GetOperandBounds().center;
+
+    internal void PrepareOutputPivot()
+    {
+        if (HasTransform && IsComplete)
+            GetOutputPivot();
+    }
+
+    internal void RotateOutputFrame(Quaternion delta, Vector3 pivot)
+    {
+        if (outputPivot.HasValue)
+            outputPivot = pivot + delta * (outputPivot.Value - pivot);
+        if (outputPosition.HasValue)
+            outputPosition = pivot + delta * (outputPosition.Value - pivot);
+        outputFrame = (delta * Quaternion.Euler(outputFrame)).eulerAngles;
+    }
+
+    private void UpdateTransform()
+    {
+        if (m_cachedScale.Equals(scale) && m_cachedRotation.Equals(rotation) && m_cachedFrame.Equals(outputFrame))
+            return;
+
+        Quaternion frame = Quaternion.Euler(outputFrame);
+        m_outputTransform = Matrix4x4.TRS(Vector3.zero, frame * Quaternion.Euler(rotation), scale)
+            * Matrix4x4.Rotate(Quaternion.Inverse(frame));
+        m_inverseOutputTransform = m_outputTransform.inverse;
+        m_cachedScale = scale;
+        m_cachedRotation = rotation;
+        m_cachedFrame = outputFrame;
     }
 }
 
@@ -151,6 +240,11 @@ public sealed class CustomShapeNode : CSGNode
         {
             if (member is PrimitiveNode primitive)
                 primitive.center += delta;
+            else if (member is OperationNode operation)
+            {
+                operation.outputPivot += delta;
+                operation.outputPosition += delta;
+            }
             else if (member is CustomShapeNode shape)
                 shape.Translate(delta);
         }
@@ -159,8 +253,20 @@ public sealed class CustomShapeNode : CSGNode
     public void RotateTo(Vector3 angles)
     {
         Quaternion delta = Quaternion.Euler(angles) * Quaternion.Inverse(Quaternion.Euler(Rotation));
+        PrepareOperationPivots();
         RotateBy(delta, Position);
         Rotation = angles;
+    }
+
+    private void PrepareOperationPivots()
+    {
+        foreach (var member in members)
+        {
+            if (member is OperationNode operation)
+                operation.PrepareOutputPivot();
+            else if (member is CustomShapeNode shape)
+                shape.PrepareOperationPivots();
+        }
     }
 
     private void RotateBy(Quaternion delta, Vector3 pivot)
@@ -175,6 +281,8 @@ public sealed class CustomShapeNode : CSGNode
                 primitive.center = pivot + delta * (primitive.center - pivot);
                 primitive.rotation = (delta * Quaternion.Euler(primitive.rotation)).eulerAngles;
             }
+            else if (member is OperationNode operation)
+                operation.RotateOutputFrame(delta, pivot);
             else if (member is CustomShapeNode shape)
                 shape.RotateBy(delta, pivot);
         }
@@ -238,38 +346,22 @@ public sealed class CustomShapeNode : CSGNode
 [Serializable]
 public sealed class UnionNode : OperationNode
 {
-    public override float SignedDistance(Vector3 center)
-    {
-        Validate();
-        return Mathf.Min(leftChild.SignedDistance(center),
-                    rightChild.SignedDistance(center));
-    }
+    protected override float Evaluate(Vector3 point) =>
+        Mathf.Min(leftChild.SignedDistance(point), rightChild.SignedDistance(point));
 }
 
 [Serializable]
 public sealed class IntersectNode : OperationNode
 {
-    public override float SignedDistance(Vector3 center)
-    {
-        Validate();
-        return Mathf.Max(leftChild.SignedDistance(center),
-                    rightChild.SignedDistance(center));
-    }
+    protected override float Evaluate(Vector3 point) =>
+        Mathf.Max(leftChild.SignedDistance(point), rightChild.SignedDistance(point));
 }
 
 [Serializable]
 public sealed class DiffNode : OperationNode
 {
-    public override Bounds GetBounds()
-    {
-        Validate();
-        return leftChild.GetBounds();
-    }
+    protected override Bounds GetOperandBounds() => leftChild.GetBounds();
 
-    public override float SignedDistance(Vector3 center)
-    {
-        Validate();
-        return Mathf.Max(leftChild.SignedDistance(center),
-                    -rightChild.SignedDistance(center));
-    }
+    protected override float Evaluate(Vector3 point) =>
+        Mathf.Max(leftChild.SignedDistance(point), -rightChild.SignedDistance(point));
 }

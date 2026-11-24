@@ -60,6 +60,9 @@ public static class CSGState
         public Vector3 rotation;
         public bool hasRotationPivot;
         public Vector3 size;
+        public Vector3 outputFrame;
+        public Vector3 outputPosition;
+        public bool hasOutputPosition;
         public float radius;
         public Color color;
         public int left;
@@ -99,6 +102,13 @@ public static class CSGState
             {
                 data.left = operation.leftChild == null ? 0 : ids[operation.leftChild];
                 data.right = operation.rightChild == null ? 0 : ids[operation.rightChild];
+                data.size = operation.scale;
+                data.rotation = operation.rotation;
+                data.outputFrame = operation.outputFrame;
+                data.hasRotationPivot = operation.outputPivot.HasValue;
+                data.center = operation.outputPivot.GetValueOrDefault();
+                data.hasOutputPosition = operation.outputPosition.HasValue;
+                data.outputPosition = operation.outputPosition.GetValueOrDefault();
                 data.colorSource = operation.colorSource;
                 data.color = operation.customColor;
             }
@@ -172,6 +182,15 @@ public static class CSGState
             {
                 if (!Enum.IsDefined(typeof(OperationColorSource), data.colorSource))
                     throw new FormatException("Invalid operation color source.");
+                Vector3 scale = data.size.Equals(Vector3.zero) ? Vector3.one : data.size;
+                if (!Finite(scale) || scale.x <= 0 || scale.y <= 0 || scale.z <= 0 || !Finite(data.outputFrame) ||
+                    (data.hasRotationPivot && !Finite(data.center)) || (data.hasOutputPosition && !Finite(data.outputPosition)))
+                    throw new FormatException("Invalid operation transform.");
+                operation.scale = scale;
+                operation.rotation = data.rotation;
+                operation.outputFrame = data.outputFrame;
+                operation.outputPivot = data.hasRotationPivot ? data.center : (Vector3?)null;
+                operation.outputPosition = data.hasOutputPosition ? data.outputPosition : (Vector3?)null;
                 operation.colorSource = data.colorSource;
                 operation.customColor = data.color;
             }
@@ -374,6 +393,11 @@ public static class CSGCustomShapes
         else if (node is DiffNode) result = new DiffNode();
         else throw new InvalidOperationException("Unsupported CSG node type.");
         var original = (OperationNode)node;
+        result.scale = original.scale;
+        result.rotation = original.rotation;
+        result.outputFrame = original.outputFrame;
+        result.outputPivot = original.outputPivot;
+        result.outputPosition = original.outputPosition;
         result.colorSource = original.colorSource;
         result.customColor = original.customColor;
         return result;
