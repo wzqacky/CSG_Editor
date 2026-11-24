@@ -16,6 +16,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private const float NodeWidth = 250f;
     private const float MinZoom = 0.4f;
     private const float MaxZoom = 2f;
+    private const float BoxSelectionThreshold = 4f;
 
     private sealed class PreviewInstance
     {
@@ -42,6 +43,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private bool m_restoring;
     private Button m_undoButton;
     private Button m_redoButton;
+    private Button m_removeButton;
     private Button m_groupButton;
     private string m_statePath;
     private string m_objPath;
@@ -56,6 +58,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private VisualElement m_lines;
     private VisualElement m_emptyGraph;
     private VisualElement m_graphViewport;
+    private VisualElement m_selectionBox;
     private ScrollView m_graphScroll;
     private VisualElement m_addMenu;
     private VisualElement m_customMenu;
@@ -86,6 +89,9 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private Vector3 m_originalCameraPosition;
     private Quaternion m_originalCameraRotation;
     private readonly HashSet<CSGNode> m_selected = new HashSet<CSGNode>();
+    private bool m_boxSelecting;
+    private bool m_addToSelection;
+    private Vector2 m_boxSelectionStart;
     private NodeView m_draggedNode;
     private Vector2 m_dragOffset;
     private CSGNode m_connectionSource;
@@ -250,7 +256,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         var graphHeader = new VisualElement();
         graphHeader.AddToClassList("section-header");
         graphHeader.Add(StyledLabel("CSG tree", "section-title"));
-        graphHeader.Add(StyledLabel("Shift-click to select  /  Right-click for actions  /  Scroll to zoom", "section-hint"));
+        graphHeader.Add(StyledLabel("Drag empty space to select  /  Shift to add  /  Right-click for actions  /  Scroll to zoom", "section-hint"));
         graphPanel.Add(graphHeader);
 
         m_graphScroll = new ScrollView(ScrollViewMode.VerticalAndHorizontal) { name = "graph-scroll" };
@@ -282,6 +288,10 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_emptyGraph = StyledLabel("Right-click the canvas to add a shape or operation.", "graph-empty");
         m_emptyGraph.pickingMode = PickingMode.Ignore;
         m_canvas.Add(m_emptyGraph);
+        m_selectionBox = new VisualElement { name = "selection-box", pickingMode = PickingMode.Ignore };
+        m_selectionBox.AddToClassList("selection-box");
+        m_selectionBox.style.display = DisplayStyle.None;
+        m_graphViewport.Add(m_selectionBox);
 
         m_addMenu = new ScrollView(ScrollViewMode.Vertical) { name = "add-menu" };
         m_addMenu.AddToClassList("add-menu");
@@ -297,6 +307,15 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_redoButton.AddToClassList("menu-item");
         m_addMenu.Add(m_undoButton);
         m_addMenu.Add(m_redoButton);
+        m_removeButton = new Button(() =>
+        {
+            CloseAddMenu();
+            m_canvas.Focus();
+            RemoveNodes(new HashSet<CSGNode>(m_selected));
+        }) { text = "Remove selected" };
+        m_removeButton.AddToClassList("menu-item");
+        m_removeButton.SetEnabled(false);
+        m_addMenu.Add(m_removeButton);
         m_groupButton = new Button(ShowCreateShapeDialog) { text = "Create custom shape..." };
         m_groupButton.AddToClassList("menu-item");
         m_groupButton.SetEnabled(false);
@@ -364,6 +383,14 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_previewMenu.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
         m_canvas.RegisterCallback<PointerMoveEvent>(OnGraphPointerMove);
         m_canvas.RegisterCallback<PointerUpEvent>(OnGraphPointerUp);
+        m_canvas.RegisterCallback<PointerCancelEvent>(evt =>
+        {
+            if (m_boxSelecting && evt.pointerId == m_activePointer)
+            {
+                ClearGraphDrag();
+                m_canvas.ReleasePointer(evt.pointerId);
+            }
+        });
         m_canvas.RegisterCallback<PointerCaptureOutEvent>(OnGraphCaptureOut);
         BuildDialog(root);
     }
@@ -464,7 +491,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         if (m_selected.Count < 2)
         {
-            m_status.text = "Shift-click at least two nodes to create a custom shape.";
+            m_status.text = "Select at least two nodes to create a custom shape.";
             return;
         }
         int number = m_storage.CustomShapes.Count + 1;
@@ -778,10 +805,20 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         if (evt.button == 0 && (evt.target == m_canvas || evt.target == m_canvasContainer ||
             evt.target == m_graphScroll.contentContainer || evt.target == m_graphViewport))
         {
-            ClearSelection();
             m_canvas.Focus();
+            if (evt.pointerId != PointerId.mousePointerId)
+            {
+                ClearSelection();
+                return;
+            }
+            m_boxSelecting = true;
+            m_addToSelection = evt.shiftKey;
+            m_boxSelectionStart = evt.position;
+            m_activePointer = evt.pointerId;
+            m_canvas.CapturePointer(evt.pointerId);
+            evt.StopPropagation();
         }
-        if (evt.button == 2)
+        else if (evt.button == 2)
         {
             CloseAddMenu();
             m_panning = true;
@@ -845,6 +882,9 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void OnGraphWheel(WheelEvent evt)
     {
+        evt.StopPropagation();
+        if (m_boxSelecting)
+            return;
         float zoom = Mathf.Clamp(m_graphZoom * Mathf.Exp(-evt.delta.y * 0.05f), MinZoom, MaxZoom);
         if (!Mathf.Approximately(zoom, m_graphZoom))
         {
@@ -858,7 +898,6 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             Vector2 offset = point * zoom - cursor;
             m_graphScroll.schedule.Execute(() => m_graphScroll.scrollOffset = offset);
         }
-        evt.StopPropagation();
     }
 
     private void AddNode(CSGNode node, Vector2? position)
@@ -909,7 +948,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         title.AddToClassList("node-title");
         header.Add(title);
         title.RegisterCallback<PointerDownEvent>(evt => StartNodeDrag(evt, view));
-        var delete = new Button(() => RemoveNode(entity.node)) { text = "x", tooltip = "Delete node" };
+        var delete = new Button(() => RemoveNodes(new HashSet<CSGNode> { entity.node }))
+            { text = "x", tooltip = "Delete node" };
         delete.AddToClassList("node-delete");
         header.Add(delete);
 
@@ -1020,6 +1060,12 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         if (evt.pointerId != m_activePointer)
             return;
+        evt.StopPropagation();
+        if (m_boxSelecting)
+        {
+            UpdateBoxSelection(evt.position, false);
+            return;
+        }
         if (m_panning)
         {
             m_graphScroll.scrollOffset = m_panScrollStart - ((Vector2)evt.position - m_panStart);
@@ -1038,14 +1084,15 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         else if (m_connectionSource != null)
             m_connectionEnd = m_canvas.WorldToLocal(evt.position);
         m_lines.MarkDirtyRepaint();
-        evt.StopPropagation();
     }
 
     private void OnGraphPointerUp(PointerUpEvent evt)
     {
         if (evt.pointerId != m_activePointer)
             return;
-        if (m_connectionSource != null)
+        if (m_boxSelecting)
+            UpdateBoxSelection(evt.position, true);
+        else if (m_connectionSource != null)
         {
             bool hit = false;
             foreach (var view in m_nodes.Values)
@@ -1089,6 +1136,13 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void ClearGraphDrag()
     {
+        if (m_boxSelecting)
+        {
+            m_boxSelecting = false;
+            m_selectionBox.style.display = DisplayStyle.None;
+            foreach (var entry in m_nodes)
+                entry.Value.element.EnableInClassList("node-selected", m_selected.Contains(entry.Key));
+        }
         if (m_draggedNode != null)
             RecordHistory();
         m_activePointer = -1;
@@ -1096,6 +1150,41 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_connectionSource = null;
         m_panning = false;
         m_lines.MarkDirtyRepaint();
+    }
+
+    private void UpdateBoxSelection(Vector2 position, bool commit)
+    {
+        bool isDrag = (position - m_boxSelectionStart).sqrMagnitude >= BoxSelectionThreshold * BoxSelectionThreshold;
+        Rect viewport = m_graphViewport.worldBound;
+        Vector2 end = Vector2.Max(viewport.min, Vector2.Min(position, viewport.max));
+        Vector2 min = Vector2.Min(m_boxSelectionStart, end);
+        Vector2 max = Vector2.Max(m_boxSelectionStart, end);
+        Rect bounds = Rect.MinMaxRect(min.x, min.y, max.x, max.y);
+
+        m_selectionBox.style.display = isDrag && !commit ? DisplayStyle.Flex : DisplayStyle.None;
+        if (isDrag && !commit)
+        {
+            Rect localBounds = m_graphViewport.WorldToLocal(bounds);
+            m_selectionBox.style.left = localBounds.x;
+            m_selectionBox.style.top = localBounds.y;
+            m_selectionBox.style.width = localBounds.width;
+            m_selectionBox.style.height = localBounds.height;
+        }
+
+        foreach (var entry in m_nodes)
+        {
+            bool selected = (m_addToSelection && m_selected.Contains(entry.Key)) ||
+                (isDrag && bounds.Overlaps(entry.Value.element.worldBound));
+            entry.Value.element.EnableInClassList("node-selected", selected);
+            if (!commit)
+                continue;
+            if (selected)
+                m_selected.Add(entry.Key);
+            else
+                m_selected.Remove(entry.Key);
+        }
+        if (commit)
+            UpdateSelection();
     }
 
     private void DrawConnections(MeshGenerationContext context)
@@ -1172,12 +1261,17 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void UpdateSelection()
     {
+        m_removeButton.SetEnabled(m_selected.Count > 0);
         m_groupButton.SetEnabled(m_selected.Count >= 2);
-        if (!m_previewError && m_selected.Count > 1)
-            m_status.text = m_selected.Count + " nodes selected. Right-click to create a custom shape.";
-        else if (!m_previewError && m_selected.Count == 1)
+        if (m_previewError)
+            return;
+        if (m_selected.Count > 1)
+            m_status.text = m_selected.Count + " nodes selected. Right-click for actions.";
+        else if (m_selected.Count == 1)
             foreach (var node in m_selected)
                 m_status.text = "Editing " + NodeName(m_nodes[node].entity) + ".";
+        else
+            m_status.text = "Right-click the canvas to add a node.";
     }
 
     private void AddPrimitiveFields(VisualElement form, PrimitiveNode primitive)
@@ -1447,27 +1541,34 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         disconnect.SetEnabled(child != null);
     }
 
-    private void RemoveNode(CSGNode node)
+    private void RemoveNodes(HashSet<CSGNode> nodes)
     {
+        if (nodes.Count == 0)
+            return;
+
         foreach (var entity in m_storage.Entities)
         {
-            if (entity.node is OperationNode operation)
+            if (entity.node is OperationNode operation && !nodes.Contains(operation))
             {
-                if (ReferenceEquals(operation.leftChild, node)) operation.leftChild = null;
-                if (ReferenceEquals(operation.rightChild, node)) operation.rightChild = null;
+                if (nodes.Contains(operation.leftChild)) operation.leftChild = null;
+                if (nodes.Contains(operation.rightChild)) operation.rightChild = null;
                 UpdateOperationView(m_nodes[operation], operation);
             }
         }
-        RemovePreview(node);
-        m_canvas.Remove(m_nodes[node].element);
-        m_nodes.Remove(node);
-        m_storage.Remove(node);
+        foreach (var node in nodes)
+        {
+            RemovePreview(node);
+            m_canvas.Remove(m_nodes[node].element);
+            m_nodes.Remove(node);
+            m_storage.Remove(node);
+            m_selected.Remove(node);
+        }
         m_emptyGraph.style.display = m_storage.Entities.Count == 0 ? DisplayStyle.Flex : DisplayStyle.None;
-        m_selected.Remove(node);
         UpdateSelection();
         RefreshAllPreviews();
         m_lines.MarkDirtyRepaint();
-        m_status.text = "Node deleted.";
+        if (!m_previewError)
+            m_status.text = nodes.Count == 1 ? "Node removed." : nodes.Count + " nodes removed.";
         RecordHistory();
     }
 
