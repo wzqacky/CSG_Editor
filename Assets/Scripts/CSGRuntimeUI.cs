@@ -19,6 +19,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private const float MinZoom = 0.4f;
     private const float MaxZoom = 2f;
     private const float BoxSelectionThreshold = 4f;
+    private const string ClipboardPrefix = "CSG Studio selection\n";
 
     private sealed class PreviewInstance
     {
@@ -104,6 +105,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private bool m_addToSelection;
     private Vector2 m_boxSelectionStart;
     private NodeView m_draggedNode;
+    private readonly List<NodeView> m_draggedViews = new List<NodeView>();
     private Vector2 m_dragOffset;
     private Vector2 m_dragMinimum;
     private Vector2 m_dragMaximum;
@@ -580,36 +582,15 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             Mathf.Clamp(m_addPosition.y, 8, CanvasHeight - CustomShapeCardHeight - 8));
         instance.hasGraphPosition = true;
 
-        Vector2 min = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
-        Vector2 max = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
-        foreach (var entity in added)
-        {
-            min = Vector2.Min(min, entity.graphPosition);
-            max = Vector2.Max(max, entity.graphPosition);
-        }
+        Rect bounds = GetGraphBounds(added);
         Vector2 origin = instance.graphPosition + Vector2.up * (ExpandedShapeToolbarHeight + 16);
         float maxY = CanvasHeight - 145 - 8;
-        float above = instance.graphPosition.y - (max.y - min.y) - 145 - 16;
-        if (origin.y + max.y - min.y > maxY && above >= 8)
+        float above = instance.graphPosition.y - bounds.height - 145 - 16;
+        if (origin.y + bounds.height > maxY && above >= 8)
             origin.y = above;
-        Vector2 offset = origin - min;
-        if (8 - min.x <= maxX - max.x)
-            offset.x = Mathf.Clamp(offset.x, 8 - min.x, maxX - max.x);
-        if (8 - min.y <= maxY - max.y)
-            offset.y = Mathf.Clamp(offset.y, 8 - min.y, maxY - max.y);
-        foreach (var entity in added)
-        {
-            Vector2 position = entity.graphPosition + offset;
-            entity.graphPosition = new Vector2(Mathf.Clamp(position.x, 8, maxX), Mathf.Clamp(position.y, 8, maxY));
-            entity.hasGraphPosition = true;
-            AddNodeView(entity);
-        }
-        AddNodeView(instance);
-        UpdateShapeOwners();
-        foreach (var entity in added)
-            if (entity.node is OperationNode operation)
-                UpdateOperationView(m_nodes[entity.node], operation);
-        m_emptyGraph.style.display = DisplayStyle.None;
+        PlaceCopiedNodes(added, bounds, origin);
+        added.Add(instance);
+        AddCopiedNodeViews(added);
         SelectNode(instance.node);
         CloseAddMenu();
         m_canvas.Focus();
@@ -618,11 +599,117 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         if (!m_previewError) m_status.text = "Added " + shape.name + ".";
     }
 
+    private static Rect GetGraphBounds(List<CSGStorage.Entity> entities)
+    {
+        Vector2 min = entities[0].graphPosition;
+        Vector2 max = min;
+        foreach (var entity in entities)
+        {
+            min = Vector2.Min(min, entity.graphPosition);
+            max = Vector2.Max(max, entity.graphPosition);
+        }
+        return Rect.MinMaxRect(min.x, min.y, max.x, max.y);
+    }
+
+    private static void PlaceCopiedNodes(List<CSGStorage.Entity> entities, Rect bounds, Vector2 origin)
+    {
+        Vector2 minimum = new Vector2(8, 8);
+        Vector2 maximum = new Vector2(CanvasWidth - NodeWidth - 8, CanvasHeight - 145 - 8);
+        Vector2 offset = origin - bounds.min;
+        Vector2 minOffset = minimum - bounds.min;
+        Vector2 maxOffset = maximum - bounds.max;
+        if (minOffset.x <= maxOffset.x)
+            offset.x = Mathf.Clamp(offset.x, minOffset.x, maxOffset.x);
+        if (minOffset.y <= maxOffset.y)
+            offset.y = Mathf.Clamp(offset.y, minOffset.y, maxOffset.y);
+        foreach (var entity in entities)
+        {
+            entity.graphPosition = Vector2.Max(minimum, Vector2.Min(entity.graphPosition + offset, maximum));
+            entity.hasGraphPosition = true;
+        }
+    }
+
+    private void AddCopiedNodeViews(List<CSGStorage.Entity> entities)
+    {
+        foreach (var entity in entities)
+            AddNodeView(entity);
+        UpdateShapeOwners();
+        foreach (var entity in entities)
+            if (entity.node is OperationNode operation)
+                UpdateOperationView(m_nodes[operation], operation);
+        m_emptyGraph.style.display = DisplayStyle.None;
+    }
+
+    private void CopySelection()
+    {
+        if (m_selected.Count == 0)
+            return;
+        GUIUtility.systemCopyBuffer = ClipboardPrefix + CSGCustomShapes.CaptureSelection(m_storage, m_selected);
+        m_status.text = m_selected.Count == 1 ? "Copied 1 card." : "Copied " + m_selected.Count + " cards.";
+    }
+
+    private void PasteSelection()
+    {
+        string clipboard = GUIUtility.systemCopyBuffer;
+        if (string.IsNullOrEmpty(clipboard) || !clipboard.StartsWith(ClipboardPrefix, StringComparison.Ordinal))
+            return;
+
+        List<CSGStorage.Entity> added;
+        try
+        {
+            var snapshot = CSGState.Deserialize(clipboard.Substring(ClipboardPrefix.Length));
+            added = CSGCustomShapes.AddCopy(m_storage, snapshot);
+        }
+        catch (Exception exception) when (exception is ArgumentException || exception is FormatException || exception is InvalidOperationException)
+        {
+            m_status.text = "Paste failed. " + exception.Message;
+            return;
+        }
+        if (added.Count == 0)
+            return;
+
+        Rect viewport = m_canvas.WorldToLocal(m_graphViewport.worldBound);
+        Vector2 origin = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
+        foreach (var node in m_selected)
+            origin = Vector2.Min(origin, m_nodes[node].entity.graphPosition);
+        if (!viewport.Contains(origin))
+            origin = viewport.min;
+
+        PlaceCopiedNodes(added, GetGraphBounds(added), origin + Vector2.one * 24);
+        AddCopiedNodeViews(added);
+        ClearSelection();
+        foreach (var entity in added)
+        {
+            var view = m_nodes[entity.node];
+            if (view.IsCardVisible)
+            {
+                m_selected.Add(entity.node);
+                view.card.AddToClassList("node-selected");
+            }
+        }
+        UpdateSelection();
+        CloseAddMenu();
+        m_canvas.Focus();
+        RefreshAllPreviews();
+        RecordHistory();
+        if (!m_previewError)
+            m_status.text = m_selected.Count == 1 ? "Pasted 1 card." : "Pasted " + m_selected.Count + " cards.";
+    }
+
     private void OnKeyDown(KeyDownEvent evt)
     {
         if (FileBrowser.IsOpen || m_activePointer != -1 || m_dialog.style.display == DisplayStyle.Flex)
             return;
-        if ((evt.actionKey || evt.ctrlKey) && !evt.altKey &&
+        bool shortcut = (evt.actionKey || evt.ctrlKey) && !evt.altKey;
+        if (shortcut && (evt.keyCode == KeyCode.C || evt.keyCode == KeyCode.V))
+        {
+            if (evt.target is VisualElement target && IsTextInput(target))
+                return;
+            if (evt.keyCode == KeyCode.C) CopySelection();
+            else PasteSelection();
+            evt.StopPropagation();
+        }
+        else if (shortcut &&
             (evt.keyCode == KeyCode.Z || evt.keyCode == KeyCode.Y))
         {
             if (evt.keyCode == KeyCode.Y || evt.shiftKey) Redo();
@@ -851,14 +938,18 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         }
         else if (evt.button == 1)
         {
-            if (evt.target is VisualElement target &&
-                (target.GetFirstAncestorOfType<TextField>() != null ||
-                 target.GetFirstAncestorOfType<FloatField>() != null))
+            if (evt.target is VisualElement target && IsTextInput(target))
                 return;
             m_canvas.Focus();
             OpenAddMenu(evt.position);
             evt.StopPropagation();
         }
+    }
+
+    private static bool IsTextInput(VisualElement target)
+    {
+        return target is TextField || target is FloatField ||
+            target.GetFirstAncestorOfType<TextField>() != null || target.GetFirstAncestorOfType<FloatField>() != null;
     }
 
     private void OpenAddMenu(Vector2 screenPosition)
@@ -1136,13 +1227,24 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         if (evt.button != 0 || m_activePointer != -1)
             return;
-        SelectNode(view.entity.node);
+        if (!m_selected.Contains(view.entity.node))
+            SelectNode(view.entity.node);
         m_canvas.Focus();
         m_draggedNode = view;
         m_dragOffset = m_canvas.WorldToLocal(evt.position) - view.entity.graphPosition;
         var minDelta = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
         var maxDelta = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
-        GetMoveLimits(view, ref minDelta, ref maxDelta);
+        foreach (var node in m_selected)
+        {
+            var selected = m_nodes[node];
+            var owner = selected.shapeOwner;
+            while (owner != null && !m_selected.Contains(owner.entity.node))
+                owner = owner.shapeOwner;
+            if (owner != null)
+                continue;
+            m_draggedViews.Add(selected);
+            GetMoveLimits(selected, ref minDelta, ref maxDelta);
+        }
         m_dragMinimum = view.entity.graphPosition + Vector2.Min(minDelta, Vector2.zero);
         m_dragMaximum = view.entity.graphPosition + Vector2.Max(maxDelta, Vector2.zero);
         m_activePointer = evt.pointerId;
@@ -1196,7 +1298,9 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         {
             Vector2 position = m_canvas.WorldToLocal(evt.position) - m_dragOffset;
             position = Vector2.Max(m_dragMinimum, Vector2.Min(position, m_dragMaximum));
-            MoveNode(m_draggedNode, position);
+            Vector2 delta = position - m_draggedNode.entity.graphPosition;
+            foreach (var view in m_draggedViews)
+                MoveNode(view, view.entity.graphPosition + delta);
         }
         else if (m_connectionSource != null)
             m_connectionEnd = m_canvas.WorldToLocal(evt.position);
@@ -1278,6 +1382,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             RecordHistory();
         m_activePointer = -1;
         m_draggedNode = null;
+        m_draggedViews.Clear();
         m_connectionSource = null;
         m_panning = false;
         m_lines.MarkDirtyRepaint();

@@ -304,9 +304,19 @@ public static class CSGCustomShapes
         var selected = new HashSet<CSGNode>(selection);
         if (selected.Contains(null) || selected.Count < 2)
             throw new ArgumentException("Select at least two different nodes.", nameof(selection));
+        return CaptureSnapshot(storage, selected, true);
+    }
+
+    internal static string CaptureSelection(CSGStorage storage, ICollection<CSGNode> selection)
+    {
+        return CaptureSnapshot(storage, selection, false);
+    }
+
+    private static string CaptureSnapshot(CSGStorage storage, ICollection<CSGNode> selection, bool includeInputs)
+    {
         var included = new HashSet<CSGNode>();
-        foreach (var node in selected)
-            IncludeDependencies(node, included);
+        foreach (var node in selection)
+            IncludeDependencies(node, included, includeInputs);
 
         var snapshot = new CSGStorage();
         var copies = new Dictionary<CSGNode, CSGNode>();
@@ -321,12 +331,13 @@ public static class CSGCustomShapes
         }
         if (copies.Count != included.Count)
             throw new InvalidOperationException("The selected graph contains a missing node.");
+        CSGNode Remap(CSGNode node) => node != null && copies.TryGetValue(node, out var copy) ? copy : null;
         foreach (var pair in copies)
         {
             if (pair.Key is OperationNode original && pair.Value is OperationNode copy)
             {
-                copy.leftChild = original.leftChild == null ? null : copies[original.leftChild];
-                copy.rightChild = original.rightChild == null ? null : copies[original.rightChild];
+                copy.leftChild = Remap(original.leftChild);
+                copy.rightChild = Remap(original.rightChild);
             }
             else if (pair.Key is CustomShapeNode originalShape && pair.Value is CustomShapeNode copiedShape)
                 foreach (var member in originalShape.members)
@@ -337,7 +348,13 @@ public static class CSGCustomShapes
 
     public static List<CSGStorage.Entity> AddCopy(CSGStorage storage, CSGStorage.CustomShape shape)
     {
-        var snapshot = CSGState.Deserialize(shape.state);
+        return AddCopy(storage, CSGState.Deserialize(shape.state));
+    }
+
+    internal static List<CSGStorage.Entity> AddCopy(CSGStorage storage, CSGStorage snapshot)
+    {
+        if (snapshot.Entities.Count > int.MaxValue - storage.NextId)
+            throw new InvalidOperationException("The graph has run out of node IDs.");
         var added = new List<CSGStorage.Entity>();
         foreach (var entity in snapshot.Entities)
         {
@@ -366,17 +383,17 @@ public static class CSGCustomShapes
         return storage.Add(instance);
     }
 
-    private static void IncludeDependencies(CSGNode node, HashSet<CSGNode> included)
+    private static void IncludeDependencies(CSGNode node, HashSet<CSGNode> included, bool includeInputs)
     {
         if (node == null || !included.Add(node)) return;
-        if (node is OperationNode operation)
+        if (includeInputs && node is OperationNode operation)
         {
-            IncludeDependencies(operation.leftChild, included);
-            IncludeDependencies(operation.rightChild, included);
+            IncludeDependencies(operation.leftChild, included, true);
+            IncludeDependencies(operation.rightChild, included, true);
         }
         else if (node is CustomShapeNode shape)
             foreach (var member in shape.members)
-                IncludeDependencies(member, included);
+                IncludeDependencies(member, included, includeInputs);
     }
 
     private static CSGNode CopyNode(CSGNode node)
