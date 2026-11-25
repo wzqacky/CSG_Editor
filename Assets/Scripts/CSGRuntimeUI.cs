@@ -20,6 +20,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     private const float MaxZoom = 2f;
     private const float BoxSelectionThreshold = 4f;
     private const string ClipboardPrefix = "CSG Studio selection\n";
+    private const int PreviewCellsPerAxis = 64;
+    private const int PreviewSampleBudget = 500_000; // For quicker render, so use a lower budget
 
     private sealed class PreviewInstance
     {
@@ -27,6 +29,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         public Mesh mesh;
         public Material material;
         public string error;
+        public bool fullDetail;
     }
 
     private sealed class NodeView
@@ -361,6 +364,9 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         previewHeader.AddToClassList("preview-header");
         previewHeader.Add(StyledLabel("3D preview", "section-title"));
         previewHeader.Add(StyledLabel("Drag to orbit  /  Scroll to zoom  /  Right-click for options", "section-hint"));
+        var fullDetail = new Button(BuildFullDetail) { name = "build-full-detail", text = "Build Full Detail" };
+        fullDetail.style.flexShrink = 0;
+        previewHeader.Add(fullDetail);
         previewPanel.Add(previewHeader);
         m_viewport = new VisualElement { name = "viewport" };
         m_viewport.AddToClassList("viewport");
@@ -799,11 +805,6 @@ public sealed class CSGRuntimeUI : MonoBehaviour
 
     private void ShowExportObjDialog()
     {
-        if (m_previewError)
-        {
-            ReportFileError("OBJ export failed", new InvalidOperationException("Fix the preview error before exporting."));
-            return;
-        }
         ShowFileDialog(true, m_objPath, "Export OBJ", "OBJ", ".obj", ExportObj);
     }
 
@@ -872,6 +873,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
     {
         try
         {
+            RefreshFullDetailPreviews();
             if (m_previewError)
                 throw new InvalidOperationException("Fix the preview error before exporting.");
             var meshes = new List<KeyValuePair<string, Mesh>>();
@@ -1959,7 +1961,27 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         RefreshPreviewMeshes(NeedsUpdate);
     }
 
-    private void RefreshPreviewMeshes(Func<CSGNode, bool> needsUpdate)
+    private void BuildFullDetail()
+    {
+        if (FileBrowser.IsOpen)
+            return;
+        if (m_previews.Count == 0)
+        {
+            m_status.text = "Add a visible shape to build full detail.";
+            return;
+        }
+
+        RefreshFullDetailPreviews();
+        if (!m_previewError)
+            m_status.text = "Full-detail preview ready.";
+    }
+
+    private void RefreshFullDetailPreviews()
+    {
+        RefreshPreviewMeshes(node => !m_previews[node].fullDetail, Sdf.MaxSampleCount);
+    }
+
+    private void RefreshPreviewMeshes(Func<CSGNode, bool> needsUpdate, int sampleBudget = PreviewSampleBudget)
     {
         bool hadPreviewError = m_previewError;
         string error = null;
@@ -1984,7 +2006,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
             if (needsPreview)
                 CreatePreview(entity.node, entity.id);
             if (needsPreview || needsUpdate(entity.node))
-                UpdatePreview(entity.node);
+                UpdatePreview(entity.node, sampleBudget);
             error = m_previews[entity.node].error ?? error;
         }
         if (m_texelSplatProbe != null)
@@ -2025,7 +2047,7 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         m_previews.Add(node, new PreviewInstance { gameObject = gameObject, mesh = mesh, material = material });
     }
 
-    private void UpdatePreview(CSGNode node)
+    private void UpdatePreview(CSGNode node, int sampleBudget)
     {
         var preview = m_previews[node];
         Bounds bounds = node.GetBounds();
@@ -2033,12 +2055,13 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         float[,,] values;
         try
         {
-            values = Sdf.Sample(node.SignedDistance, bounds, 64);
+            values = Sdf.Sample(node.SignedDistance, bounds, PreviewCellsPerAxis, sampleBudget);
         }
         catch (InvalidOperationException exception)
         {
             preview.mesh.Clear();
             preview.error = exception.Message;
+            preview.fullDetail = false;
             Debug.LogError(exception.Message, this);
             return;
         }
@@ -2060,6 +2083,8 @@ public sealed class CSGRuntimeUI : MonoBehaviour
         preview.mesh.RecalculateBounds();
         preview.material.color = node.GetColor();
         preview.error = null;
+        int shortestAxisPoints = Math.Min(values.GetLength(0), Math.Min(values.GetLength(1), values.GetLength(2)));
+        preview.fullDetail = sampleBudget == Sdf.MaxSampleCount || shortestAxisPoints == PreviewCellsPerAxis + 1;
     }
 
     private void RemovePreview(CSGNode node)

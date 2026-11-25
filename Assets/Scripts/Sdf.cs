@@ -3,14 +3,17 @@ using UnityEngine;
 
 public static class Sdf
 {
-    private const int MaxSampleCount = 8000000;
+    internal const int MaxSampleCount = 8_000_000;
 
-    public static float[,,] Sample(Func<Vector3, float> sdf_func, Bounds bounds, int cellsPerAxis)
+    public static float[,,] Sample(Func<Vector3, float> sdf_func, Bounds bounds, int cellsPerAxis,
+        int sampleBudget = MaxSampleCount)
     {
         if (cellsPerAxis < 1)
         {
            throw new ArgumentOutOfRangeException("cellsPerAxis must be greater than 0");
         }
+        if (sampleBudget < 8 || sampleBudget > MaxSampleCount) // Invalid input budget number
+            throw new ArgumentOutOfRangeException(nameof(sampleBudget));
 
         Vector3 size = bounds.size;
         double shortest = Math.Min(size.x, Math.Min(size.y, size.z));
@@ -28,14 +31,14 @@ public static class Sdf
         {
             // First guess: use the shortest side to get the res
             var (x, y, z) = CellCounts(resolution);
-            return (x + 1) * (y + 1) * (z + 1) <= MaxSampleCount;
+            return (x + 1) * (y + 1) * (z + 1) <= sampleBudget;
         }
 
         if (!FitsBudget(cellsPerAxis))
         {
             double aspectProduct = (size.x / shortest) * (size.y / shortest) * (size.z / shortest);
             // solve n^3 * m_1 * m_2 <= budget
-            int estimate = (int)Math.Floor(Math.Cbrt(MaxSampleCount / aspectProduct));
+            int estimate = (int)Math.Floor(Math.Cbrt(sampleBudget / aspectProduct));
             cellsPerAxis = Math.Max(1, Math.Min(cellsPerAxis, estimate));
 
             while (cellsPerAxis > 1 && !FitsBudget(cellsPerAxis))
