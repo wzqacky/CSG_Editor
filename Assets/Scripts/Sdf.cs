@@ -19,12 +19,35 @@ public static class Sdf
             float.IsInfinity(size.x) || float.IsInfinity(size.y) || float.IsInfinity(size.z))
             throw new InvalidOperationException("CSG sampling bounds must have finite, positive dimensions.");
 
-        double xCells = Math.Ceiling(cellsPerAxis * (size.x / shortest));
-        double yCells = Math.Ceiling(cellsPerAxis * (size.y / shortest));
-        double zCells = Math.Ceiling(cellsPerAxis * (size.z / shortest));
-        if ((xCells + 1) * (yCells + 1) * (zCells + 1) > MaxSampleCount)
-            throw new InvalidOperationException("CSG preview exceeds the sampling limit. Reduce the size or distance between shapes.");
+        (double x, double y, double z) CellCounts(int resolution) => (
+            Math.Ceiling(resolution * (size.x / shortest)),
+            Math.Ceiling(resolution * (size.y / shortest)),
+            Math.Ceiling(resolution * (size.z / shortest)));
 
+        bool FitsBudget(int resolution)
+        {
+            // First guess: use the shortest side to get the res
+            var (x, y, z) = CellCounts(resolution);
+            return (x + 1) * (y + 1) * (z + 1) <= MaxSampleCount;
+        }
+
+        if (!FitsBudget(cellsPerAxis))
+        {
+            double aspectProduct = (size.x / shortest) * (size.y / shortest) * (size.z / shortest);
+            // solve n^3 * m_1 * m_2 <= budget
+            int estimate = (int)Math.Floor(Math.Cbrt(MaxSampleCount / aspectProduct));
+            cellsPerAxis = Math.Max(1, Math.Min(cellsPerAxis, estimate));
+
+            while (cellsPerAxis > 1 && !FitsBudget(cellsPerAxis))
+                // Safe check
+                cellsPerAxis--;
+
+            if (!FitsBudget(cellsPerAxis))
+                throw new InvalidOperationException(
+                    "CSG preview exceeds the sampling limit. Reduce the size or distance between shapes.");
+        }
+
+        var (xCells, yCells, zCells) = CellCounts(cellsPerAxis);
         int nx = (int)xCells;
         int ny = (int)yCells;
         int nz = (int)zCells;
